@@ -39,9 +39,12 @@ def evaluate_polynomial_from_coeffs(coeffs: npt.NDArray, basis_func_generator: C
         Array of polynomial coefficients.
     basis_func_generator : Callable
         A function that takes a 2D point and returns a list or array
-        of basis function values at that point.
+        of basis function values at that point. This function should handle
+        any necessary scaling based on the rectangle used during coefficient
+        computation.
     eval_points : array-like
         A single 2D point or an array of 2D points at which to evaluate the polynomial.
+        These points should be in the same domain as the points used to compute the coefficients.
 
     Returns
     -------
@@ -53,7 +56,9 @@ def evaluate_polynomial_from_coeffs(coeffs: npt.NDArray, basis_func_generator: C
     if eval_points.shape[1] != 2:
         raise ValueError("Evaluation points must be 2D")
 
-    # Generate the Vandermonde matrix for the evaluation points.
+    # Generate the Vandermonde matrix for the evaluation points using the provided basis function generator.
+    # The basis_func_generator 'p' returned by gen_vanderm2d is already configured
+    # with the correct multi-indices and rectangle for scaling.
     V0 = np.array([basis_func_generator(point) for point in eval_points])
 
     # Evaluate the polynomial: P(x,y) = sum(coeffs[j] * basis_j(x,y))
@@ -69,15 +74,12 @@ def poly_projector2d(
     nodes_set: npt.NDArray,
     func_values: npt.NDArray,
     poly_basis: int = 1,
-    # Removed Zc and Zr parameters as they are now handled via the rectangle in gen_vanderm2d
-    # Zc: Optional[npt.NDArray] = None,
-    # Zr: Optional[float] = None,
     rectangle: Optional[Tuple[float, float, float, float]] = None # Rectangle parameter is still needed
-) -> Callable:
+) -> Tuple[Callable, npt.NDArray]: # Modified return type to include coefficients
     """
     Compute a polynomial interpolation (or least-squares fit) for 2D points
     using an orthogonalization method to find coefficients, and return a
-    function to evaluate the polynomial.
+    function to evaluate the polynomial AND the coefficients.
 
     Parameters
     ----------
@@ -86,7 +88,8 @@ def poly_projector2d(
         If equal to the number of nodes, an interpolation polynomial is computed.
         If less than the number of nodes, a least-squares fit is performed.
     nodes_set : npt.NDArray
-        Array of interpolation points with shape (n, 2).
+        Array of interpolation points with shape (n, 2). These points
+        are assumed to be within the 'rectangle' domain if provided.
     func_values : npt.NDArray
         Function values at the interpolation points with shape (n,).
     poly_basis : int, optional
@@ -100,8 +103,12 @@ def poly_projector2d(
 
     Returns
     -------
-    Callable
-        A function that evaluates the polynomial at given 2D points.
+    Tuple[Callable, npt.NDArray] # Modified return to include coefficients
+        A tuple containing:
+        - A function that evaluates the computed polynomial at given 2D points.
+          The evaluation function expects input points in the same domain as the
+          original 'nodes_set' (i.e., within the 'rectangle' bounds).
+        - The numpy array of polynomial coefficients.
 
     Raises
     ------
@@ -120,24 +127,13 @@ def poly_projector2d(
     if dim > nodes_set.shape[0]:
         raise ValueError("`dim` must be less than or equal to the number of nodes in nodes_set")
 
-    # Determine basis scaling parameters if rectangle is provided and Zc/Zr are not
-    # Removed this block as Zc/Zr are no longer parameters of poly_projector2d
-    # basis_Zc = Zc
-    # basis_Zr = Zr
-    # if rectangle is not None and (Zc is None or Zr is None):
-    #     xmin, ymin, xmax, ymax = rectangle
-    #     basis_Zc = np.array([(xmin + xmax) / 2.0, (ymin + ymax) / 2.0])
-    #     basis_Zr = max(xmax - xmin, ymax - ymin) / 2.0 # Use max dimension for scaling
-
-
     # Generate the Vandermonde matrix and the polynomial basis function.
     # `p` is a function that takes a 2D point and returns the basis values at that point.
-    # Pass only the rectangle to gen_vanderm2d for scaling
+    # Pass the rectangle to gen_vanderm2d for scaling
     V, p = gen_vanderm2d(
         nodes_set,
         col=dim,
         poly_basis=poly_basis,
-        # Removed Zc=basis_Zc, Zr=basis_Zr from the call
         rectangle=rectangle # Pass the rectangle
     )
 
@@ -163,7 +159,7 @@ def poly_projector2d(
 
 
     # Return a callable function that evaluates the polynomial using the computed coefficients
-    # and the basis function generator.
+    # and the basis function generator, AND the coefficients array.
     def polynomial_evaluation_function(eval_set: Union[npt.NDArray, list]) -> Union[float, npt.NDArray]:
         """
         Evaluate the computed polynomial at given points using the pre-calculated coefficients.
@@ -171,4 +167,5 @@ def poly_projector2d(
         # Use the helper function to perform the evaluation
         return evaluate_polynomial_from_coeffs(coeffs, p, eval_set)
 
-    return polynomial_evaluation_function
+    return polynomial_evaluation_function, coeffs # Return both the function and coefficients
+

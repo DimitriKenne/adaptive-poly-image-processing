@@ -167,7 +167,7 @@ if __name__ == "__main__":
     # This step computes the coefficients internally and returns a function to evaluate.
     try:
         # poly_projector2d now takes the rectangle directly
-        polynomial_eval_func = poly_projector2d(
+        polynomial_eval_func, _ = poly_projector2d(
             dim=polynomial_dimension, # Use the adjusted dimension
             nodes_set=interpolation_nodes,
             func_values=function_values_at_nodes,

@@ -6,8 +6,11 @@ from PIL import Image # Still needed for save_images
 import os # Still needed for save_images and path handling
 from typing import Optional, Callable, Tuple # Keep necessary types
 from pathlib import Path # Still needed for save_images path handling
+import math # Import math for comb (needed for expected_dim)
+
 
 # Corrected relative imports for modules within the same package (poly_approx)
+# poly_projector2d is now expected to return coefficients
 from .poly_projector import poly_projector2d
 from .interpolation_nodes import extremal_points
 
@@ -36,16 +39,20 @@ def save_images(image_dict, save_folder):
         max_val = np.max(img)
 
         # Handle the case where the image is constant (min == max)
-        if max_val - min_val < 1e-8: # Use a small epsilon for floating point comparison
+        epsilon = 1e-8 # Use a small epsilon for floating point comparison
+        if max_val - min_val < epsilon:
             # If all values are the same, save as a uniform grayscale image
-            # If the constant value is close to 0, save as black. If close to 1, save as white.
+            # If the constant value is close to 0, save as black (0).
+            # If close to 1, save as white (255).
             # Otherwise, save as a mid-gray value scaled by the constant value.
-            if np.abs(min_val) < 1e-8: # Close to black
+            if np.abs(min_val) < epsilon: # Close to black
                 img_to_save = np.zeros_like(img)
-            elif np.abs(min_val - 1.0) < 1e-8: # Close to white
+            elif np.abs(min_val - 1.0) < epsilon: # Close to white
                  img_to_save = np.ones_like(img)
             else: # Constant but not black or white
+                 # Scale the constant value to [0, 1] range for saving
                  img_to_save = np.full_like(img, fill_value=min_val) # Use the constant value directly
+
         else:
             # Min-max normalization to scale to [0, 1]
             img_to_save = (img - min_val) / (max_val - min_val)
@@ -64,9 +71,10 @@ def save_images(image_dict, save_folder):
             print(f"Error saving image {filename} to {filepath}: {e}")
 
 
-def compute_polynomial_approx(image_segment: np.ndarray, poly_degree: int, points: np.ndarray, rectangle: Tuple[float, float, float, float]) -> Callable:
+def compute_polynomial_approx(image_segment: np.ndarray, poly_degree: int, points: np.ndarray, rectangle: Tuple[float, float, float, float]) -> Tuple[Callable, np.ndarray]:
     """
-    Compute the polynomial interpolation for given points on an image segment.
+    Compute the polynomial interpolation (or least-squares fit) for given points
+    on an image segment and return the evaluation function and coefficients.
 
     Parameters:
     -----------
@@ -84,10 +92,12 @@ def compute_polynomial_approx(image_segment: np.ndarray, poly_degree: int, point
 
     Returns:
     --------
-    Callable
-        A function that evaluates the computed polynomial at given 2D points.
-        The evaluation function expects input points in the same domain as the
-        original 'points' (i.e., within the 'rectangle' bounds relative to [0,1]x[0,1]).
+    Tuple[Callable, ndarray]
+        A tuple containing:
+        - A function that evaluates the computed polynomial at given 2D points.
+          The evaluation function expects input points in the same domain as the
+          original 'points' (i.e., within the 'rectangle' bounds relative to [0,1]x[0,1]).
+        - The numpy array of polynomial coefficients.
     """
     height, width = image_segment.shape
 
@@ -127,11 +137,11 @@ def compute_polynomial_approx(image_segment: np.ndarray, poly_degree: int, point
 
     # Compute the polynomial using the selected points and their function values
     # Pass the original 'points' (in the rectangle domain) and the rectangle bounds
-    # poly_projector2d and the basis functions will use the rectangle to handle scaling internally.
-    approx_poly = poly_projector2d(poly_dimension, points, func_values, poly_basis=1, rectangle=rectangle) # Pass rectangle
+    # poly_projector2d now returns both the function and the coefficients
+    poly_func, coefficients = poly_projector2d(poly_dimension, points, func_values, poly_basis=1, rectangle=rectangle) # Pass rectangle
 
-    # The returned function 'approx_poly' expects evaluation points in the same domain as the input 'points'
-    return approx_poly
+    # The returned function 'poly_func' expects evaluation points in the same domain as the input 'points'
+    return poly_func, coefficients # Return both the function and coefficients
 
 
 def image_poly_approximation_segment(
@@ -148,7 +158,7 @@ def image_poly_approximation_segment(
 
     This function takes a preprocessed image segment (e.g., grayscale, normalized)
     and computes its polynomial approximation based on selected nodes within the
-    given rectangle. It returns the raw error maps and approximations.
+    given rectangle. It returns the raw error maps, approximations, and coefficients.
 
     Parameters:
     -----------
@@ -178,8 +188,8 @@ def image_poly_approximation_segment(
     --------
     dict
         A dictionary containing the original segment, smoothed segment,
-        polynomial approximations, raw error maps, and the nodes used.
-        Returns an empty dictionary if an error occurs.
+        polynomial approximations, raw error maps, the nodes used, and the
+        polynomial coefficients. Returns an empty dictionary if an error occurs.
     """
     height, width = image_segment.shape
     print(f"Processing segment with shape: ({height}, {width}) within rectangle {rectangle}")
@@ -227,32 +237,32 @@ def image_poly_approximation_segment(
     if nodes_method != 'full_mesh' and len(points) < expected_dim:
          print(f"Warning: Number of generated nodes ({len(points)}) is less than the expected polynomial dimension ({expected_dim}).")
          print("Using discrete least squares approximation with available nodes.")
-         polynomial_dimension = len(points) # Use number of nodes as dimension for least squares
+         # polynomial_dimension = len(points) # Use number of nodes as dimension for least squares - Not needed for poly_projector2d call
     elif nodes_method == 'full_mesh' and len(points) < expected_dim:
          print(f"Warning: Full mesh size ({len(points)}) is less than the expected polynomial dimension ({expected_dim}).")
          print("Using discrete least squares approximation with the full mesh.")
-         polynomial_dimension = len(points) # Use mesh size as dimension for least squares
-    else:
-        polynomial_dimension = expected_dim # Use expected dimension for interpolation or full mesh LS (if large enough)
+         # polynomial_dimension = len(points) # Use mesh size as dimension for least squares - Not needed for poly_projector2d call
+    # else:
+        # polynomial_dimension = expected_dim # Use expected dimension for interpolation or full mesh LS (if large enough) - Not needed for poly_projector2d call
 
 
-    # --- Compute Polynomial Approximations ---
-    print("Computing polynomial approximations...")
+    # --- Compute Polynomial Approximations and Get Coefficients ---
+    print("Computing polynomial approximations and extracting coefficients...")
 
     try:
         # Compute polynomial for the original segment
-        # compute_polynomial_approx now takes the rectangle
-        poly_original = compute_polynomial_approx(image_segment, poly_degree, points, rectangle)
+        # compute_polynomial_approx now returns (poly_func, coefficients)
+        poly_original_func, coeffs_original = compute_polynomial_approx(image_segment, poly_degree, points, rectangle)
 
         # Compute polynomial for the smoothed segment
         # The same points and rectangle are used
-        poly_smoothed = compute_polynomial_approx(smoothed_segment, poly_degree, points, rectangle)
+        poly_smoothed_func, coeffs_smoothed = compute_polynomial_approx(smoothed_segment, poly_degree, points, rectangle)
 
     except ValueError as e:
-        print(f"Error computing polynomial approximations: {e}")
+        print(f"Error computing polynomial approximations or getting coefficients: {e}")
         return {} # Return empty dict on error
     except Exception as e:
-        print(f"An unexpected error occurred while computing polynomial approximations: {e}")
+        print(f"An unexpected error occurred while computing polynomial approximations or getting coefficients: {e}")
         return {}
 
 
@@ -266,8 +276,8 @@ def image_poly_approximation_segment(
     evaluation_points_scaled = np.vstack([XX_eval_scaled.ravel(), YY_eval_scaled.ravel()]).T
 
     # Evaluate the polynomials at all points in the evaluation grid
-    approx_original_flat = poly_original(evaluation_points_scaled).real
-    approx_smoothed_flat = poly_smoothed(evaluation_points_scaled).real
+    approx_original_flat = poly_original_func(evaluation_points_scaled).real
+    approx_smoothed_flat = poly_smoothed_func(evaluation_points_scaled).real
 
     # Reshape the approximated values back to the segment shape
     # Clip to [0, 1] to ensure valid image intensity range
@@ -284,7 +294,7 @@ def image_poly_approximation_segment(
     elapsed_time = time.time() - start_time
     print(f"Approximation and error computation completed in {elapsed_time:.4f} seconds")
 
-    # Return results as a dictionary
+    # Return results as a dictionary, now including coefficients
     # Raw error maps are returned, normalization happens later if needed.
     return {
         'original_segment': image_segment,
@@ -296,5 +306,8 @@ def image_poly_approximation_segment(
         'diff_original_poly_smoothed': diff_original_poly_smoothed, # Raw error
         'diff_smoothed_poly_original': diff_smoothed_poly_original, # Raw error
         'computation_time': elapsed_time,
-        'nodes': points # Include the nodes used
+        'nodes': points, # Include the nodes used
+        'coefficients_original': coeffs_original, # Include coefficients for original
+        'coefficients_smoothed': coeffs_smoothed # Include coefficients for smoothed
     }
+

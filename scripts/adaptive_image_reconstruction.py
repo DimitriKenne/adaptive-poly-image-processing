@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import os
 import time
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Tuple, Union, Optional, Callable
 import math # Import math for comb
+import pickle # To save the results dictionary
+import matplotlib.patches as patches # Import patches for drawing rectangles
+import matplotlib.cm as cm # Import colormap functionality
 
 # Add project root to Python path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Define the base path for the results folder
 BASE_RESULTS_DIR = PROJECT_ROOT / "results"
 
-# Define the subfolder for adaptive image reconstruction results (renamed)
+# Define the subfolder for adaptive image reconstruction results
 ADAPTIVE_RECONSTRUCTION_RESULTS_BASE_DIR = BASE_RESULTS_DIR / "adaptive_image_reconstruction_tests"
 
 # Ensure the base results directory for adaptive reconstruction tests exists
@@ -23,14 +26,14 @@ os.makedirs(ADAPTIVE_RECONSTRUCTION_RESULTS_BASE_DIR, exist_ok=True)
 
 # Import necessary functions from poly_approx
 try:
-    # Corrected import: import save_images (plural)
+    # image_poly_approximation_segment is now expected to return coefficients
     from poly_approx.image_poly_approximation import image_poly_approximation_segment, save_images
-    from poly_approx.edge_processing import combine_errors, apply_threshold, normalize_error_image
-    # Corrected import: Import calculate_error_measure from image_reconstruction_metrics
-    from poly_approx.image_reconstruction_metrics import calculate_error_measure
+    # Import calculate_error_measure and normalize_error_image from image_reconstruction_metrics
+    from poly_approx.image_reconstruction_metrics import calculate_error_measure, normalize_error_image
+    # Import evaluate_polynomial_from_coeffs and gen_vanderm2d, graded_lexicographic_multi_indices
+    from poly_approx.poly_projector import evaluate_polynomial_from_coeffs
+    from poly_approx.polynomial_bases import gen_vanderm2d, graded_lexicographic_multi_indices
 
-    # Import admissible_mesh function (as it was in your provided code)
-    from poly_approx.admissible_meshes import compute_admissible_mesh
 
     _poly_approx_available = True
 except ImportError as e:
@@ -43,56 +46,37 @@ except ImportError as e:
     # Updated dummy function signature to match the expected one in process_segment
     def image_poly_approximation_segment(image_segment, rectangle, poly_degree, nodes_method, admissible_mesh_type, m_cheb, poly_basis):
         print("Dummy image_poly_approximation_segment called.")
-        # Return dummy results: original, smoothed, zero approx, zero errors
         height, width = image_segment.shape
+        num_coeffs = int((poly_degree + 1) * (poly_degree + 2) / 2)
+        dummy_coeffs = np.zeros(num_coeffs)
         return {
-            'original_segment': image_segment,
+            'original_segment': np.zeros_like(image_segment),
             'smoothed_segment': np.zeros_like(image_segment),
             'approx_original': np.zeros_like(image_segment),
             'approx_smoothed': np.zeros_like(image_segment),
-            'error_original': np.zeros_like(image_segment), # Return raw errors
-            'error_smoothed': np.zeros_like(image_segment), # Return raw errors
-            'diff_original_poly_smoothed': np.zeros_like(image_segment), # Return raw errors
-            'diff_smoothed_poly_original': np.zeros_like(image_segment), # Return raw errors
+            'error_original': np.zeros_like(image_segment),
+            'error_smoothed': np.zeros_like(image_segment),
+            'diff_original_poly_smoothed': np.zeros_like(image_segment),
+            'diff_smoothed_poly_original': np.zeros_like(image_segment),
             'computation_time': 0.0,
             'nodes_method': nodes_method,
-            'poly_degree': poly_degree
+            'poly_degree': poly_degree,
+            'coefficients_original': dummy_coeffs,
+            'coefficients_smoothed': dummy_coeffs
         }
 
     # Dummy save_images function
     def save_images(image_dict, save_folder):
         print("Dummy save_images called.")
-        # Dummy implementation: just print what would be saved
         for filename in image_dict.keys():
             print(f"  Dummy saving: {filename} to {save_folder}")
-
-
-    def combine_errors(error_maps, strategy='max', weights=None):
-        print("Dummy combine_errors called.")
-        if error_maps:
-            first_map_shape = None
-            for img in error_maps.values():
-                if img.size > 0:
-                    first_map_shape = img.shape
-                    break
-            if first_map_shape is not None:
-                 return np.zeros(first_map_shape, dtype=np.float32)
-            else:
-                 return np.zeros((0, 0), dtype=np.float32)
-        else:
-            return np.zeros((0, 0), dtype=np.float32)
-
-    def apply_threshold(error_image, threshold_type='fixed', fixed_threshold=0.5):
-        print("Dummy apply_threshold called.")
-        if error_image.size == 0:
-             return np.zeros_like(error_image, dtype=np.uint8)
-        return np.zeros_like(error_image, dtype=np.uint8)
 
     # Dummy calculate_error_measure function (returns a value > threshold to force subdivision in dummy mode)
     def calculate_error_measure(error_map, measure_type='mse'):
         print(f"Dummy calculate_error_measure called with measure: {measure_type}")
-        return 1.0 # Always return a value > threshold to force subdivision (in dummy mode)
+        return 1.0
 
+    # Dummy normalize_error_image function for fallback
     def normalize_error_image(error_map, epsilon=1e-8):
          print("Dummy normalize_error_image called.")
          if error_map.size == 0:
@@ -103,10 +87,32 @@ except ImportError as e:
              return np.zeros_like(error_map, dtype=np.float32)
          return ((error_map - min_val) / (max_val - min_val + epsilon)).astype(np.float32)
 
-    # Dummy compute_admissible_mesh function (as it was in your provided code)
-    def compute_admissible_mesh(*args, **kwargs):
-        print("Dummy compute_admissible_mesh called.")
-        return np.array([]) # Return empty array
+    # Dummy evaluate_polynomial_from_coeffs and a dummy basis function generator
+    # We need a dummy gen_vanderm2d to provide a dummy basis function generator
+    def dummy_basis_func_generator(point):
+         # A dummy basis function that always returns an array of ones
+         # The size should match the expected number of coefficients for a dummy poly_degree
+         dummy_poly_degree = 5 # Assume a default degree for dummy
+         num_coeffs = int((dummy_poly_degree + 1) * (dummy_poly_degree + 2) / 2)
+         return np.ones(num_coeffs)
+
+    def gen_vanderm2d(X, col=None, poly_basis=1, rectangle=None):
+         print("Dummy gen_vanderm2d called to get basis function generator.")
+         # Return a dummy Vandermonde matrix and a dummy basis function generator
+         num_points = len(X) if X is not None else 1
+         num_coeffs = col if col is not None else int((5 + 1) * (5 + 2) / 2) # Assume degree 5 for dummy
+         dummy_V = np.zeros((num_points, num_coeffs))
+         return dummy_V, dummy_basis_func_generator
+
+
+    def evaluate_polynomial_from_coeffs(coeffs, basis_func_generator, eval_points):
+        print("Dummy evaluate_polynomial_from_coeffs called.")
+        eval_points = np.atleast_2d(eval_points)
+        return np.zeros(eval_points.shape[0])
+
+    def graded_lexicographic_multi_indices(total_terms):
+        print("Dummy graded_lexicographic_multi_indices called.")
+        return [(0,0)] * total_terms # Return dummy indices
 
 
 def load_image_grayscale(image_path: Path) -> np.ndarray:
@@ -134,11 +140,13 @@ def process_segment(
     current_depth: int,
     min_segment_size: int, # Added min_segment_size parameter
     results_dict: Dict, # Dictionary to store results from final segments
-    segment_id: str
+    segment_id: str,
+    poly_basis: int # Pass poly_basis to process_segment
 ):
     """
     Recursively processes an image segment for polynomial approximation and adaptive refinement.
-    Raw error maps and approximation image are stored for final segments.
+    Stores polynomial coefficients, basis type, segment bounding boxes, and final error measure
+    for terminal segments.
 
     Parameters:
     -----------
@@ -170,6 +178,8 @@ def process_segment(
         Dictionary to store results from terminal segments.
     segment_id : str
         Unique identifier for the current segment.
+    poly_basis : int
+        Polynomial basis used for approximation.
     """
     row_start, row_end, col_start, col_end = segment_bbox
     segment_image = original_image[row_start:row_end, col_start:col_end]
@@ -181,41 +191,6 @@ def process_segment(
     if height == 0 or width == 0:
         print(f"Skipping empty segment {segment_id}.")
         return # Skip empty segments
-
-    # --- Base Case 1: Maximum depth reached ---
-    if current_depth >= max_depth:
-        print(f"Max depth ({max_depth}) reached for segment {segment_id}. Stopping recursion.")
-        # Process this segment as a terminal segment
-        return process_terminal_reconstruction_segment(
-            original_image,
-            segment_bbox,
-            poly_degree,
-            nodes_method,
-            admissible_mesh_type,
-            m_cheb,
-            sigma,
-            current_depth,
-            results_dict,
-            segment_id
-        )
-
-    # --- Base Case 2: Segment is too small ---
-    if height <= min_segment_size or width <= min_segment_size:
-         print(f"Segment size ({width}x{height}) below minimum ({min_segment_size}) for segment {segment_id}. Stopping recursion.")
-         # Process this segment as a terminal segment
-         return process_terminal_reconstruction_segment(
-            original_image,
-            segment_bbox,
-            poly_degree,
-            nodes_method,
-            admissible_mesh_type,
-            m_cheb,
-            sigma,
-            current_depth,
-            results_dict,
-            segment_id
-         )
-
 
     # Define the rectangle for this segment relative to the original image [0,1]x[0,1]
     original_height, original_width = original_image.shape
@@ -229,6 +204,7 @@ def process_segment(
     # --- Step 1 & 2: Polynomial Approximation and Raw Error Map Calculation ---
     try:
         # Call image_poly_approximation_segment with the rectangle and relevant parameters
+        # This function is now expected to return coefficients as well
         approximation_results = image_poly_approximation_segment(
             image_segment=segment_image,
             rectangle=segment_rectangle, # Pass the rectangle tuple
@@ -236,38 +212,39 @@ def process_segment(
             nodes_method=nodes_method,
             admissible_mesh_type=admissible_mesh_type, # Pass mesh type for internal mesh generation
             m_cheb=m_cheb, # m_cheb is still needed for internal mesh generation if applicable
-            poly_basis=1 # Assuming shifted monomials for now, can be configurable
+            poly_basis=poly_basis # Pass poly_basis
         )
-        # Extract raw error maps and approximation image
+        # Extract raw error maps and polynomial coefficients
         raw_error_maps = {
             'error_original': approximation_results.get('error_original', np.zeros_like(segment_image)),
             'error_smoothed': approximation_results.get('error_smoothed', np.zeros_like(segment_image)),
             'diff_original_poly_smoothed': approximation_results.get('diff_original_poly_smoothed', np.zeros_like(segment_image)),
             'diff_smoothed_poly_original': approximation_results.get('diff_smoothed_poly_original', np.zeros_like(segment_image))
         }
-        segment_approx_image = approximation_results.get('approx_smoothed', np.zeros_like(segment_image)) # Or approx_original, based on preference
+        # We will use the coefficients from the smoothed approximation for reconstruction and error evaluation
+        polynomial_coefficients = approximation_results.get('coefficients_smoothed', np.array([])) # Get the smoothed coefficients
+        # segment_approx_image = approximation_results.get('approx_smoothed', np.zeros_like(segment_image)) # Not needed for recursive step
+
         print(f"Approximation complete for segment {segment_id}.")
 
     except Exception as e:
         print(f"Error during polynomial approximation for segment {segment_id}: {e}")
         print(f"Stopping processing for segment {segment_id}.")
-        # Store zero maps for this segment if approximation fails
+        # Store empty coefficients and status for this segment if approximation fails
         results_dict[segment_id] = {
             'bbox': segment_bbox,
-            'approx_image': np.zeros_like(segment_image),
-            'raw_error_maps': { # Store zero raw error maps
-                'error_original': np.zeros_like(segment_image),
-                'error_smoothed': np.zeros_like(segment_image),
-                'diff_original_poly_smoothed': np.zeros_like(segment_image),
-                'diff_smoothed_poly_original': np.zeros_like(segment_image)
-            },
+            'coefficients': np.array([]), # Store empty coefficients
             'depth': current_depth,
+            'poly_degree': poly_degree, # Store poly degree used
+            'poly_basis': poly_basis, # Store poly basis used
+            'rectangle': segment_rectangle, # Store the segment rectangle
+            'final_error_measure': -1.0, # Indicate error during approximation
             'status': 'approximation_failed'
         }
         return
 
 
-    # --- Step 4: Evaluate Reconstruction Quality (Compute M(S)) ---
+    # --- Step 3: Evaluate Reconstruction Quality (Compute M(S)) ---
     # Calculate the error measure M(S) on a chosen RAW error map to guide subdivision.
     # Let's use the raw 'error_original' map for M(S) to be more sensitive to original detail.
     error_map_for_measure = raw_error_maps.get('error_original')
@@ -277,9 +254,12 @@ def process_segment(
          print(f"Stopping processing for segment {segment_id}.")
          results_dict[segment_id] = {
              'bbox': segment_bbox,
-             'approx_image': segment_approx_image,
-             'raw_error_maps': raw_error_maps, # Store the available raw error maps
+             'coefficients': polynomial_coefficients, # Store the coefficients
              'depth': current_depth,
+             'poly_degree': poly_degree, # Store poly degree used
+             'poly_basis': poly_basis, # Store poly basis used
+             'rectangle': segment_rectangle, # Store the segment rectangle
+             'final_error_measure': -1.0, # Indicate error during measure calculation
              'status': 'error_measure_input_missing'
          }
          return
@@ -293,9 +273,12 @@ def process_segment(
         print(f"Stopping processing for segment {segment_id}.")
         results_dict[segment_id] = {
             'bbox': segment_bbox,
-            'approx_image': segment_approx_image,
-            'raw_error_maps': raw_error_maps, # Store the problematic error maps
+            'coefficients': polynomial_coefficients, # Store the coefficients
             'depth': current_depth,
+            'poly_degree': poly_degree, # Store poly degree used
+            'poly_basis': poly_basis, # Store poly basis used
+            'rectangle': segment_rectangle, # Store the segment rectangle
+            'final_error_measure': -1.0, # Indicate error during measure calculation
             'status': 'error_measure_failed'
         }
         return
@@ -304,27 +287,61 @@ def process_segment(
         print(f"Stopping processing for segment {segment_id}.")
         results_dict[segment_id] = {
             'bbox': segment_bbox,
-            'approx_image': segment_approx_image,
-            'raw_error_maps': raw_error_maps, # Store the problematic error maps
+            'coefficients': polynomial_coefficients, # Store the coefficients
             'depth': current_depth,
+            'poly_degree': poly_degree, # Store poly degree used
+            'poly_basis': poly_basis, # Store poly basis used
+            'rectangle': segment_rectangle, # Store the segment rectangle
+            'final_error_measure': -1.0, # Indicate error during measure calculation
             'status': 'error_measure_failed'
         }
         return
 
 
-    # --- Step 5: Decision and Refinement ---
+    # --- Step 4: Decision and Refinement ---
     # Stopping criterion met: Either error is low enough, max depth reached, or segment is too small.
     if segment_error_measure <= error_threshold:
         print(f"Stopping for segment {segment_id}: Error measure {segment_error_measure:.6f} <= {error_threshold}.")
 
-        # Store the raw error maps and approximation image for this final segment
+        # Store the segment bbox, coefficients, and final error measure for this final segment
         results_dict[segment_id] = {
             'bbox': segment_bbox,
-            'approx_image': segment_approx_image,
-            'raw_error_maps': raw_error_maps, # Store all raw error maps
+            'coefficients': polynomial_coefficients, # Store the coefficients
             'depth': current_depth,
+            'poly_degree': poly_degree, # Store poly degree used
+            'poly_basis': poly_basis, # Store poly basis used
+            'rectangle': segment_rectangle, # Store the segment rectangle
+            'final_error_measure': segment_error_measure, # Store the final error measure
             'status': 'terminated_by_error' # Indicate termination by error
         }
+
+    elif current_depth >= max_depth:
+         print(f"Max depth ({max_depth}) reached for segment {segment_id}. Stopping recursion.")
+         # Store the segment bbox, coefficients, and final error measure for this final segment
+         results_dict[segment_id] = {
+             'bbox': segment_bbox,
+             'coefficients': polynomial_coefficients, # Store the coefficients
+             'depth': current_depth,
+             'poly_degree': poly_degree, # Store poly degree used
+             'poly_basis': poly_basis, # Store poly basis used
+             'rectangle': segment_rectangle, # Store the segment rectangle
+             'final_error_measure': segment_error_measure, # Store the final error measure
+             'status': 'terminated_by_depth' # Indicate termination by depth
+         }
+
+    elif height <= min_segment_size or width <= min_segment_size:
+         print(f"Segment size ({width}x{height}) below minimum ({min_segment_size}) for segment {segment_id}. Stopping recursion.")
+         # Store the segment bbox, coefficients, and final error measure for this final segment
+         results_dict[segment_id] = {
+             'bbox': segment_bbox,
+             'coefficients': polynomial_coefficients, # Store the coefficients
+             'depth': current_depth,
+             'poly_degree': poly_degree, # Store poly degree used
+             'poly_basis': poly_basis, # Store poly basis used
+             'rectangle': segment_rectangle, # Store the segment rectangle
+             'final_error_measure': segment_error_measure, # Store the final error measure
+             'status': 'terminated_by_size' # Indicate termination by size
+         }
 
     else:
         # Error is too high and stopping criteria not met: Subdivide and recurse.
@@ -345,7 +362,7 @@ def process_segment(
         if row_end > mid_row and mid_col > col_start:
             sub_segments_bbox.append((mid_row, row_end, col_start, mid_col))
         # Bottom-right
-        if row_end > mid_row and col_end > mid_col: # Corrected condition here
+        if row_end > mid_row and col_end > mid_col:
             sub_segments_bbox.append((mid_row, row_end, mid_col, col_end))
 
         # Recursively process sub-segments
@@ -357,166 +374,217 @@ def process_segment(
                 poly_degree,
                 nodes_method,
                 admissible_mesh_type,
-                m_cheb, # Pass the configured m_cheb (which is 2) to sub-segments
+                m_cheb,
                 sigma,
                 error_measure_type,
                 error_threshold,
                 max_depth,
                 current_depth + 1,
-                min_segment_size, # Pass min_segment_size to sub-segments
+                min_segment_size,
                 results_dict,
-                sub_segment_id
+                sub_segment_id,
+                poly_basis # Pass poly_basis to recursive call
             )
 
-def process_terminal_reconstruction_segment(
-    original_image: np.ndarray,
-    segment_bbox: Tuple[int, int, int, int],
-    poly_degree: int,
-    nodes_method: str,
-    admissible_mesh_type: str,
-    m_cheb: int,
-    sigma: float,
-    current_depth: int,
-    results_dict: Dict,
-    segment_id: str
-):
+
+def reassemble_results_from_coefficients(
+    image_shape: Tuple[int, int],
+    segment_results: Dict
+) -> np.ndarray:
     """
-    Processes a segment that has reached a termination condition (max depth or min size).
-    Performs polynomial approximation and stores results.
-    """
-    row_start, row_end, col_start, col_end = segment_bbox
-    segment_image = original_image[row_start:row_end, col_start:col_end]
-    height, width = segment_image.shape
-
-    print(f"\n--- Processing terminal segment {segment_id} at depth {current_depth} with shape {segment_image.shape} ---")
-
-    if height == 0 or width == 0:
-        print(f"Skipping empty terminal segment {segment_id}.")
-        return # Skip empty segments
-
-
-    # Define the rectangle for this segment relative to the original image [0,1]x[0,1]
-    original_height, original_width = original_image.shape
-    segment_rectangle = (
-        col_start / original_width,
-        row_start / original_height,
-        col_end / original_width,
-        row_end / original_height
-    )
-
-
-    # --- Perform Polynomial Approximation and Raw Error Map Calculation ---
-    try:
-        # Call image_poly_approximation_segment with the rectangle and relevant parameters
-        approximation_results = image_poly_approximation_segment(
-            image_segment=segment_image,
-            rectangle=segment_rectangle, # Pass the rectangle tuple
-            poly_degree=poly_degree,
-            nodes_method=nodes_method,
-            admissible_mesh_type=admissible_mesh_type, # Pass mesh type for internal mesh generation
-            m_cheb=m_cheb, # m_cheb is still needed for internal mesh generation if applicable
-            poly_basis=1 # Assuming shifted monomials for now, can be configurable
-        )
-        raw_error_maps = {
-            'error_original': approximation_results.get('error_original', np.zeros_like(segment_image)),
-            'error_smoothed': approximation_results.get('error_smoothed', np.zeros_like(segment_image)),
-            'diff_original_poly_smoothed': approximation_results.get('diff_original_poly_smoothed', np.zeros_like(segment_image)),
-            'diff_smoothed_poly_original': approximation_results.get('diff_smoothed_poly_original', np.zeros_like(segment_image))
-        }
-        segment_approx_image = approximation_results.get('approx_smoothed', np.zeros_like(segment_image)) # Or approx_original
-        print(f"Approximation complete for terminal segment {segment_id}.")
-
-        # Store the raw error maps and approximation image for this terminal segment
-        results_dict[segment_id] = {
-            'bbox': segment_bbox,
-            'approx_image': segment_approx_image,
-            'raw_error_maps': raw_error_maps, # Store all raw error maps
-            'depth': current_depth,
-            'status': 'terminated_by_size_or_depth' # Indicate termination reason
-        }
-
-    except Exception as e:
-        print(f"Error during polynomial approximation for terminal segment {segment_id}: {e}")
-        print(f"Stopping processing for terminal segment {segment_id}.")
-        # Store zero maps for this segment if approximation fails
-        results_dict[segment_id] = {
-            'bbox': segment_bbox,
-            'approx_image': np.zeros_like(segment_image),
-            'raw_error_maps': { # Store zero raw error maps
-                'error_original': np.zeros_like(segment_image),
-                'error_smoothed': np.zeros_like(segment_image),
-                'diff_original_poly_smoothed': np.zeros_like(segment_image),
-                'diff_smoothed_poly_original': np.zeros_like(segment_image)
-            },
-            'depth': current_depth,
-            'status': 'approximation_failed' # Indicate approximation failure
-        }
-        return
-
-
-def reassemble_results(image_shape: Tuple[int, int], segment_results: Dict) -> Dict[str, np.ndarray]:
-    """
-    Reassemble the results (approximation image and raw error maps)
-    from processed segments into full image arrays.
+    Reassembles the approximation image from stored segment bounding boxes,
+    polynomial coefficients, degree, basis type, and rectangle.
 
     Parameters:
     -----------
     image_shape : Tuple[int, int]
         The shape of the original image (height, width).
     segment_results : Dict
-        Dictionary containing results from each final segment, as stored by process_segment.
+        Dictionary containing results from each final segment, including bbox,
+        coefficients, poly_degree, poly_basis, and rectangle.
 
     Returns:
     --------
-    Dict[str, ndarray]
-        A dictionary containing the reassembled 'approx_image' and all reassembled
-        raw error maps ('error_original', 'error_smoothed', etc.) for the full image.
+    np.ndarray
+        The reassembled approximation image.
     """
     height, width = image_shape
     reassembled_approx = np.zeros(image_shape, dtype=np.float32)
-    # Initialize reassembled raw error maps
-    reassembled_raw_errors = {
-        'error_original': np.zeros(image_shape, dtype=np.float32),
-        'error_smoothed': np.zeros(image_shape, dtype=np.float32),
-        'diff_original_poly_smoothed': np.zeros(image_shape, dtype=np.float32),
-        'diff_smoothed_poly_original': np.zeros(image_shape, dtype=np.float32)
-    }
 
+    original_height, original_width = image_shape
 
     for segment_id, results in segment_results.items():
-        # Only reassemble results from segments that terminated successfully or with a known issue
-        # Include all terminal statuses for reassembly
-        if results['status'] in ['terminated_by_error', 'terminated_by_size_or_depth', 'approximation_failed', 'error_measure_input_missing', 'error_measure_failed', 'mesh_generation_failed']:
-             row_start, row_end, col_start, col_end = results['bbox']
-             seg_height = row_end - row_start
-             seg_width = col_end - col_start
-             # Ensure bbox coordinates are within image bounds
-             if row_start < 0 or row_end > height or col_start < 0 or col_end > width:
-                  print(f"Warning: Segment {segment_id} bbox [{row_start}:{row_end}, {col_start}:{col_end}] is out of original image bounds {image_shape}. Skipping reassembly for this segment.")
-                  continue # Skip this segment if bbox is invalid
+        if 'bbox' in results and 'coefficients' in results and 'poly_degree' in results and 'poly_basis' in results and 'rectangle' in results:
+            row_start, row_end, col_start, col_end = results['bbox']
+            coefficients = results['coefficients']
+            poly_degree = results['poly_degree']
+            poly_basis = results['poly_basis'] # Get the poly_basis used for this segment
+            segment_rectangle = results['rectangle'] # Get the segment rectangle
+
+            seg_height = row_end - row_start
+            seg_width = col_end - col_start
+
+            # Ensure bbox coordinates are within image bounds
+            if row_start < 0 or row_end > height or col_start < 0 or col_end > width:
+                 print(f"Warning: Segment {segment_id} bbox [{row_start}:{row_end}, {col_start}:{col_end}] is out of original image bounds {image_shape}. Skipping reassembly for this segment.")
+                 continue # Skip this segment if bbox is invalid
+
+            if coefficients.size == 0:
+                 # print(f"Warning: No coefficients found for segment {segment_id}. Filling with zeros.")
+                 # Segment was likely terminated due to approximation failure, it's already zero in reassembled_approx
+                 continue # Skip to next segment if no coefficients
 
 
-             # Reassemble approximation image
-             if 'approx_image' in results and results['approx_image'].shape == (seg_height, seg_width):
-                 reassembled_approx[row_start:row_end, col_start:col_end] = results['approx_image']
-             else:
-                  print(f"Warning: Approx image data missing or shape mismatch for segment {segment_id}. Expected {(seg_height, seg_width)}, got {results.get('approx_image', np.array([])).shape}. Skipping reassembly for approx_image.")
+            # Define the rectangle for this segment relative to the original image [0,1]x[0,1]
+            xmin, ymin, xmax, ymax = segment_rectangle
 
-             # Reassemble raw error maps
-             if 'raw_error_maps' in results:
-                 for error_key, error_map in results['raw_error_maps'].items():
-                     if error_key in reassembled_raw_errors and error_map.shape == (seg_height, seg_width):
-                         reassembled_raw_errors[error_key][row_start:row_end, col_start:col_end] = error_map
-                     else:
-                         print(f"Warning: Raw error map '{error_key}' data missing or shape mismatch for segment {segment_id} or invalid key. Skipping reassembly for this map. Expected {(seg_height, seg_width)}, got {error_map.shape if isinstance(error_map, np.ndarray) else 'N/A'}.")
-             else:
-                  print(f"Warning: 'raw_error_maps' key missing for segment {segment_id}. Skipping raw error map reassembly for this segment.")
+            # Create a grid of points over the segment's pixel coordinates [0, width-1] x [0, height-1]
+            # scaled to the rectangle [xmin, ymin] to [xmax, ymax] for evaluation.
+            # The evaluation grid points should be in the same domain as the input 'points' for the polynomial function.
+            x_eval_scaled = np.linspace(xmin, xmax, seg_width)
+            y_eval_scaled = np.linspace(ymin, ymax, seg_height)
+            XX_eval_scaled, YY_eval_scaled = np.meshgrid(x_eval_scaled, y_eval_scaled)
+            evaluation_points_scaled = np.vstack([XX_eval_scaled.ravel(), YY_eval_scaled.ravel()]).T
+
+            # Recreate the basis function generator 'p' using the stored poly_basis, poly_degree, and rectangle.
+            # This uses the logic from gen_vanderm2d without needing actual nodes or func_values.
+            try:
+                # Determine the dimension based on the polynomial degree
+                poly_dimension = int((poly_degree + 1) * (poly_degree + 2) / 2)
+                # Get the multi-indices for this degree
+                multi_indices = graded_lexicographic_multi_indices(poly_dimension)
+
+                # Recreate the basis function generator based on the stored poly_basis
+                # We need a dummy X for gen_vanderm2d, its value doesn't matter for getting 'p'
+                dummy_X = np.zeros((1, 2)) # Just needs to be a 2D array
+                _, basis_func_generator = gen_vanderm2d(
+                    X=dummy_X, # Dummy nodes
+                    col=poly_dimension, # Use the dimension corresponding to the degree
+                    poly_basis=poly_basis, # Use the stored poly_basis
+                    rectangle=segment_rectangle # Use the segment's rectangle
+                )
+
+                # Now use the imported evaluate_polynomial_from_coeffs with the recreated basis function generator
+                approx_flat = evaluate_polynomial_from_coeffs(
+                    coefficients,
+                    basis_func_generator, # Use the recreated basis function generator
+                    evaluation_points_scaled
+                ).real # Take real part just in case
 
 
-    return {
-        'approx_image': reassembled_approx,
-        'raw_error_maps': reassembled_raw_errors # Return the dictionary of raw error maps
+                # Reshape and clip
+                reassembled_approx[row_start:row_end, col_start:col_end] = np.clip(approx_flat.reshape(seg_height, seg_width), 0, 1)
+
+            except Exception as e:
+                 print(f"Error evaluating polynomial for segment {segment_id}: {e}")
+                 # Fill this segment region with zeros in the reassembled image
+                 reassembled_approx[row_start:row_end, col_start:col_end] = np.zeros((seg_height, seg_width), dtype=np.float32)
+
+
+    return reassembled_approx
+
+def draw_segmentation_boundaries(image: np.ndarray, segment_results: Dict, ax: plt.Axes, color='red', linewidth=1):
+    """
+    Draws the bounding boxes of the terminal segments on an image plot.
+
+    Parameters:
+    -----------
+    image : np.ndarray
+        The image to draw on (e.g., the original or reconstructed image).
+    segment_results : Dict
+        Dictionary containing results from each final segment, including bbox.
+    ax : plt.Axes
+        The matplotlib Axes object to draw the rectangles on.
+    color : str, optional
+        The color of the boundary lines. Default is 'red'.
+    linewidth : int, optional
+        The width of the boundary lines. Default is 1.
+    """
+    # Display the image first
+    ax.imshow(image, cmap='gray', vmin=0, vmax=1)
+    ax.set_title("Reconstructed Image with Segmentation Boundaries")
+    ax.axis('off')
+
+    for segment_id, results in segment_results.items():
+        if 'bbox' in results:
+            row_start, row_end, col_start, col_end = results['bbox']
+
+            # Create a Rectangle patch
+            # Rectangle takes (x, y) as the lower left corner, width, height
+            # The bbox is (row_start, row_end, col_start, col_end)
+            # So, x = col_start, y = row_start, width = col_end - col_start, height = row_end - row_start
+            rect = patches.Rectangle(
+                (col_start, row_start), # (x, y) of lower left corner
+                col_end - col_start,    # width
+                row_end - row_start,    # height
+                linewidth=linewidth,
+                edgecolor=color,
+                facecolor='none' # No fill
+            )
+
+            # Add the patch to the Axes
+            ax.add_patch(rect)
+
+def draw_segment_error_heatmap(image_shape: Tuple[int, int], segment_results: Dict, ax: plt.Axes, colormap='viridis'):
+    """
+    Draws a color-coded heatmap of the segmentation, where each segment's color
+    intensity reflects its final error measure.
+
+    Parameters:
+    -----------
+    image_shape : Tuple[int, int]
+        The shape of the original image (height, width).
+    segment_results : Dict
+        Dictionary containing results from each final segment, including bbox and final_error_measure.
+    ax : plt.Axes
+        The matplotlib Axes object to draw the heatmap on.
+    colormap : str, optional
+        The colormap to use for visualizing error. Default is 'viridis'.
+    """
+    height, width = image_shape
+    error_heatmap_image = np.zeros(image_shape, dtype=np.float32)
+
+    # Collect all final error measures from segments that terminated by error or depth/size
+    # Exclude segments that failed approximation or had missing error measure input
+    final_errors = [
+        results['final_error_measure'] for results in segment_results.values()
+        if 'final_error_measure' in results and results['final_error_measure'] >= 0
+    ]
+
+    if not final_errors:
+        print("No valid final error measures found in segment results. Cannot generate segment error heatmap.")
+        ax.set_title("Segment Error Heatmap (No data)")
+        ax.axis('off')
+        return
+
+    # Normalize the final error measures to the range [0, 1]
+    min_error = np.min(final_errors)
+    max_error = np.max(final_errors)
+    epsilon = 1e-8 # For stability
+    normalized_errors = (final_errors - min_error) / (max_error - min_error + epsilon)
+
+    # Create a mapping from segment_id to its normalized error
+    segment_normalized_error = {
+        segment_id: (results['final_error_measure'] - min_error) / (max_error - min_error + epsilon)
+        for segment_id, results in segment_results.items()
+        if 'final_error_measure' in results and results['final_error_measure'] >= 0
     }
+
+    # Fill the heatmap image with normalized error values for each segment
+    for segment_id, results in segment_results.items():
+        if 'bbox' in results and segment_id in segment_normalized_error:
+            row_start, row_end, col_start, col_end = results['bbox']
+            normalized_err = segment_normalized_error[segment_id]
+
+            # Fill the segment area with the normalized error value
+            error_heatmap_image[row_start:row_end, col_start:col_end] = normalized_err
+
+    # Display the heatmap image
+    im = ax.imshow(error_heatmap_image, cmap=colormap, origin='upper')
+    fig = ax.get_figure() # Get the figure to add a colorbar
+    fig.colorbar(im, ax=ax, label=f'Final Segment Error ({error_measure_type}, Normalized)')
+    ax.set_title(f'Segment Error Heatmap ({error_measure_type})')
+    ax.axis('off')
 
 
 if __name__ == "__main__":
@@ -529,27 +597,34 @@ if __name__ == "__main__":
     image_filename = f"{image_name}.png"
     image_path = PROJECT_ROOT / "images" / image_filename # Assuming images are in a 'images' subfolder
 
-    # Parameters for polynomial approximation within segments
-    poly_degree = 3
-    nodes_method = 'leja' # or 'fekete', 'padua', 'full_mesh'
-    # Note: admissible_mesh_type and m_cheb are used here to generate the mesh
-    # passed to image_poly_approximation_segment.
-    admissible_mesh_type = 'cheb' # Options: 'cheb', 'uni'
-    m_cheb = 2 # Parameter 'm' for Chebyshev mesh construction (m > 1). Reverted to 2 as requested.
-    sigma = 1.0 # Standard deviation for Gaussian smoothing
+    # Create a dummy image file if the sample doesn't exist for demonstration
+    if not image_path.exists():
+        print(f"Sample image not found at {image_path}. Creating a dummy image.")
+        dummy_img = np.zeros((256, 256), dtype=np.uint8)
+        # Add a white square
+        dummy_img[50:150, 50:150] = 255
+        # Add a gradient
+        for i in range(256):
+            dummy_img[i, :] = i
+        # Ensure the 'images' directory exists if saving dummy there
+        os.makedirs(PROJECT_ROOT / "images", exist_ok=True)
+        Image.fromarray(dummy_img).save(image_path)
+        print(f"Dummy image created at {image_path}")
 
-    # Parameters for error map combination and thresholding (applied AFTER reassembly)
-    # These are still calculated and saved, but the plot will focus on reconstruction.
-    combination_strategy = 'logical_and' # 'max', 'weighted_sum', 'logical_and', 'logical_or'
-    combination_weights = None # Define weights if using 'weighted_sum'
-    threshold_type = 'otsu' # 'fixed', 'otsu'
-    fixed_threshold = 0.5 # Threshold for binary edge map (if threshold_type is 'fixed')
+
+    # Parameters for polynomial approximation within segments
+    poly_degree = 5 # Increased default poly degree slightly
+    nodes_method = 'leja' # or 'fekete', 'padua', 'full_mesh'
+    admissible_mesh_type = 'cheb' # Options: 'cheb', 'uni'
+    m_cheb = 2 # Parameter 'm' for Chebyshev mesh construction (m > 1).
+    sigma = 1.0 # Standard deviation for Gaussian smoothing
+    poly_basis_used = 1 # Assuming Shifted Monomials (basis 1) were used in approximation
 
     # Parameters for adaptive segmentation control
     error_measure_type = 'mse' # 'mse', 'mae', 'rmse'
-    error_threshold = 0.0001 # Threshold for the error measure M(S)
-    max_depth = 15 # Maximum recursive segmentation depth (0 is the whole image). Reverted to 3.
-    min_segment_size = 2 # Added minimum segment dimension
+    error_threshold = 0.001 # Threshold for the error measure M(S) - Adjusted for potentially higher degree
+    max_depth = 5 # Maximum recursive segmentation depth (0 is the whole image). Increased max depth
+    min_segment_size = 8 # Increased minimum segment dimension to avoid very small segments
 
     # --- Load the original image ---
     try:
@@ -566,8 +641,9 @@ if __name__ == "__main__":
     initial_bbox = (0, original_image_shape[0], 0, original_image_shape[1])
     initial_segment_id = "root"
 
-    # Dictionary to store results from final segments
-    final_segment_results: Dict[str, Dict] = {}
+    # Dictionary to store results (bbox, coefficients, poly_degree, poly_basis, rectangle, final_error_measure) from final segments
+    # This dictionary structure is designed to be saved for compression analysis and visualization
+    final_segment_data_for_compression: Dict[str, Dict] = {}
 
     print(f"\nStarting adaptive image reconstruction for {image_filename}...")
     start_time = time.time()
@@ -579,236 +655,148 @@ if __name__ == "__main__":
         poly_degree,
         nodes_method,
         admissible_mesh_type,
-        m_cheb, # Pass the configured m_cheb (which is 2)
+        m_cheb,
         sigma,
-        error_measure_type, # Pass error measure params
+        error_measure_type,
         error_threshold,
         max_depth,
         0, # Start at depth 0
-        min_segment_size, # Pass min_segment_size
-        final_segment_results,
-        initial_segment_id
+        min_segment_size,
+        final_segment_data_for_compression, # Pass the dictionary to store results
+        initial_segment_id,
+        poly_basis_used # Pass poly_basis to the recursive function
     )
 
     end_time = time.time()
     print(f"\nAdaptive image reconstruction finished in {end_time - start_time:.4f} seconds.")
-    print(f"Processed {len(final_segment_results)} final segments.")
+    print(f"Processed {len(final_segment_data_for_compression)} final segments.")
 
-    # --- Reassemble the final results ---
-    print("\nReassembling final results...")
-    reassembled_final_results = reassemble_results(original_image_shape, final_segment_results)
-    print("Reassembly complete.")
-
-    # --- Prepare Data for Plotting the Actual Reconstruction Error ---
-    # Get the reassembled raw error_original map
-    actual_reconstruction_error_map = reassembled_final_results.get('raw_error_maps', {}).get('error_original', np.zeros(original_image_shape))
-
-    # Normalize this error map for visualization purposes (scale to [0, 1])
-    # This ensures the heatmap colormap is applied consistently regardless of the raw error range.
-    normalized_reconstruction_error_for_plot = normalize_error_image(actual_reconstruction_error_map)
-
-    # --- Perform Final Error Map Combination and Thresholding (for saving, not primary plot) ---
-    # This part is kept to generate the error and binary maps for saving,
-    # even though the main plot will focus on reconstruction.
-    print("\nPerforming final error map combination and thresholding (for saving)...")
-
-    final_binary_edge_map = np.zeros(original_image_shape, dtype=np.uint8) # Default to zero map
-    plot_filename_suffix = "" # Suffix for the edge map filename
-
-    try:
-        # Get the required raw error maps for combination/logical ops
-        error_maps_for_final_processing = {}
-        if combination_strategy in ['max', 'weighted_sum']:
-            # Need all four for these strategies
-            keys_to_use = [
-                'error_original',
-                'error_smoothed',
-                'diff_original_poly_smoothed',
-                'diff_smoothed_poly_original'
-            ]
-            for key in keys_to_use:
-                 if key in reassembled_final_results['raw_error_maps']:
-                     error_maps_for_final_processing[key] = reassembled_final_results['raw_error_maps'][key]
-                 else:
-                      print(f"Warning: Reassembled raw error map '{key}' not found. Using zero map for this key.")
-                      error_maps_for_final_processing[key] = np.zeros(original_image_shape, dtype=np.float32)
-
-
-            # Normalize the selected raw error maps over the FULL IMAGE
-            normalized_error_maps_full_image = {
-                key: normalize_error_image(err_map)
-                for key, err_map in error_maps_for_final_processing.items()
-            }
-
-            # Combine normalized error maps into a single composite map (full image)
-            composite_error_map_full_image = combine_errors(
-                normalized_error_maps_full_image, # Use normalized maps for combination
-                strategy=combination_strategy,
-                weights=combination_weights
-            )
-
-            # Apply threshold to the composite map (full image)
-            final_binary_edge_map = apply_threshold(
-                composite_error_map_full_image,
-                threshold_type=threshold_type,
-                fixed_threshold=fixed_threshold
-            )
-            plot_filename_suffix = f"{combination_strategy}_thresh-{threshold_type}"
-            if threshold_type == 'fixed':
-                 plot_filename_suffix += f"-{str(fixed_threshold).replace('.', 'p')}"
-
-
-        elif combination_strategy in ['logical_and', 'logical_or']:
-            # Apply threshold to the relevant individual raw error maps and combine
-            binary_maps_for_logical_op = []
-            # Default keys for logical ops, based on common error types
-            logical_op_keys = ['error_original', 'diff_original_poly_smoothed']
-            # If combination_weights are provided, use those keys for logical ops
-            if combination_weights:
-                 logical_op_keys = list(combination_weights.keys())
-
-            if not logical_op_keys:
-                 print("Warning: No keys specified for logical operation. Using default ['error_original', 'diff_original_poly_smoothed'].")
-                 logical_op_keys = ['error_original', 'diff_original_poly_smoothed']
-
-
-            for key in logical_op_keys:
-                if key in reassembled_final_results['raw_error_maps']:
-                    raw_error_map_to_threshold = reassembled_final_results['raw_error_maps'][key]
-
-                    # Normalize the individual raw map over the FULL IMAGE before thresholding
-                    normalized_error_map_full_image = normalize_error_image(raw_error_map_to_threshold)
-
-                    try:
-                        # Apply threshold to the individual normalized map (full image)
-                        binary_map = apply_threshold(
-                            normalized_error_map_full_image,
-                            threshold_type=threshold_type,
-                            fixed_threshold=fixed_threshold
-                        )
-                        binary_maps_for_logical_op.append(binary_map)
-                    except Exception as e:
-                        print(f"Error applying threshold to reassembled raw map '{key}' for logical op: {e}")
-                        # Append a zero map if thresholding fails for one input
-                        binary_maps_for_logical_op.append(np.zeros(original_image_shape, dtype=np.uint8))
-                else:
-                    print(f"Warning: Reassembled raw error map '{key}' not found for logical operation. Skipping.")
-                    # Append a zero map if the input map is missing
-                    binary_maps_for_logical_op.append(np.zeros(original_image_shape, dtype=np.uint8))
-
-
-            if binary_maps_for_logical_op:
-                # Combine binary maps using logical AND or OR
-                final_binary_edge_map = binary_maps_for_logical_op[0]
-                for i in range(1, len(binary_maps_for_logical_op)):
-                    if combination_strategy == 'logical_and':
-                        final_binary_edge_map = np.logical_and(final_binary_edge_map, binary_maps_for_logical_op[i]).astype(np.uint8)
-                    elif combination_strategy == 'logical_or':
-                         final_binary_edge_map = np.logical_or(final_binary_edge_map, binary_maps_for_logical_op[i]).astype(np.uint8)
-            else:
-                print(f"No binary maps generated for logical operation. Final edge map is all zeros.")
-                final_binary_edge_map = np.zeros(original_image_shape, dtype=np.uint8)
-
-
-        else:
-            print(f"Error: Invalid combination_strategy '{combination_strategy}' for final edge detection. Final edge map is all zeros.")
-            final_binary_edge_map = np.zeros(original_image_shape, dtype=np.uint8)
-
-
-    except Exception as e:
-        print(f"An unexpected error occurred during final error map processing: {e}")
-        print(f"Final binary edge map is all zeros.")
-        final_binary_edge_map = np.zeros(original_image_shape, dtype=np.uint8)
-
-
-    # --- Save the final reassembled results ---
+    # --- Save the segment data and coefficients for compression analysis ---
     # Create a subfolder for this specific image's results within the adaptive tests directory
     IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR = ADAPTIVE_RECONSTRUCTION_RESULTS_BASE_DIR / image_name
     os.makedirs(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR, exist_ok=True)
-    print(f"Saving final reassembled results to: {IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR}")
+    print(f"Saving segment data and coefficients to: {IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR}")
 
     # Construct a filename suffix based on parameters
     params_suffix = (
         f"deg{poly_degree}_{nodes_method}"
-        f"_sigma{sigma:.1f}_combine-{combination_strategy}_thresh-{threshold_type}"
-        f"{'-' + str(fixed_threshold).replace('.', 'p') if threshold_type == 'fixed' else ''}"
-        f"_measure-{error_measure_type}_errthresh{str(error_threshold).replace('.', 'p')}_depth{max_depth}_min{min_segment_size}" # Added min_segment_size to filename
+        f"_sigma{sigma:.1f}"
+        f"_measure-{error_measure_type}_errthresh{str(error_threshold).replace('.', 'p')}_depth{max_depth}_min{min_segment_size}"
+        f"_basis{poly_basis_used}" # Add basis to filename
     )
 
-    # Save the reassembled approximation image
-    try:
-        # Corrected function call: save_images (plural)
-        # Save the approximate image (approx_image is already in [0,1] range from reassembly)
-        save_images({f"{image_name}_approx_{params_suffix}.png": reassembled_final_results.get('approx_image', np.zeros(original_image_shape))}, str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR))
-    except Exception as e:
-        print(f"Error saving reassembled approximation image: {e}")
-
-    # Save a normalized version of the *actual reconstruction error* for visualization
-    try:
-        # Normalize the actual reconstruction error map for saving as PNG
-        normalized_reconstruction_error_for_save = normalize_error_image(actual_reconstruction_error_map)
-        save_images({f"{image_name}_actual_error_viz_{params_suffix}.png": normalized_reconstruction_error_for_save}, str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR))
-    except Exception as e:
-        print(f"Error saving actual error visualization image: {e}")
-
-
-    # --- Save the final Binary Edge Map (still useful for analysis) ---
-    print("\nSaving final binary edge map...")
-    # Use the same suffix as the main results for consistency
-    edge_map_filename = f"{image_name}_binary_edge_map_{params_suffix}.png"
-    edge_map_filepath = os.path.join(str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR), edge_map_filename)
+    # Filename for the saved data
+    data_filename = f"{image_name}_segment_data_{params_suffix}.pkl" # Using pickle for simplicity
+    data_filepath = os.path.join(str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR), data_filename)
 
     try:
-        # binary_edge_map is already uint8 (0 or 1)
-        # Scale to 0-255 for standard grayscale PNG
-        binary_edge_map_uint8 = (final_binary_edge_map * 255).astype(np.uint8)
-        Image.fromarray(binary_edge_map_uint8, 'L').save(edge_map_filepath)
-        print(f"Saved binary edge map to {edge_map_filepath}")
+        with open(data_filepath, 'wb') as f:
+            pickle.dump(final_segment_data_for_compression, f)
+        print(f"Saved segment data and coefficients to {data_filepath}")
+        print("This file contains the bounding boxes, polynomial degree, basis type, and coefficients for each terminal segment.")
+        print("It can be used as the 'compressed' representation for compression analysis.")
     except Exception as e:
-        print(f"Error saving final binary edge map to {edge_map_filepath}: {e}")
+        print(f"Error saving segment data and coefficients to {data_filepath}: {e}")
 
 
-    # --- Visualize Results (Updated Plot) ---
-    print("\nGenerating plot...")
-    # Determine the number of subplots (Original, Approximate Image, Actual Error Heatmap)
-    num_subplots = 3
-    fig, axes = plt.subplots(1, num_subplots, figsize=(6 * num_subplots, 6)) # Adjust figsize
+    # --- Reassemble the final results from the stored coefficients for visualization ---
+    # This step acts as a 'decoding' process to reconstruct the image from the saved data.
+    print("\nReassembling final approximation image from coefficients...")
+    if final_segment_data_for_compression:
+        # reassemble_results_from_coefficients now uses the basis stored per segment
+        reassembled_approx_image = reassemble_results_from_coefficients(
+            original_image_shape,
+            final_segment_data_for_compression
+        )
+        print("Reassembly from coefficients complete.")
 
-    # Plot Original Image
-    # Explicitly set vmin/vmax for grayscale images
-    axes[0].imshow(original_image, cmap='gray', vmin=0, vmax=1)
-    axes[0].set_title('Original Image')
-    axes[0].axis('off')
+        # --- Calculate the actual reconstruction error on the reassembled image ---
+        actual_reconstruction_error_map = np.abs(original_image - reassembled_approx_image)
 
-    # Plot Approximate Image (Reconstruction)
-    # Explicitly set vmin/vmax for grayscale images
-    axes[1].imshow(reassembled_final_results.get('approx_image', np.zeros(original_image_shape)), cmap='gray', vmin=0, vmax=1)
-    axes[1].set_title('Approximate Image (Reconstruction)')
-    axes[1].axis('off')
+        # Normalize the actual reconstruction error for visualization
+        normalized_reconstruction_error_for_plot = normalize_error_image(actual_reconstruction_error_map)
+        print("Actual reconstruction error map calculated and normalized.")
 
-    # Plot Actual Reconstruction Error Heatmap
-    # normalized_reconstruction_error_for_plot is already normalized to [0, 1]
-    # Use 'viridis' colormap for errors (blue for low error, yellow for high error)
-    im = axes[2].imshow(normalized_reconstruction_error_for_plot, cmap='viridis', origin='upper')
-    fig.colorbar(im, ax=axes[2], label='Actual Reconstruction Error (Normalized)') # Updated colorbar label
-    axes[2].set_title('Actual Reconstruction Error Heatmap') # Updated plot title
-    axes[2].axis('off')
+        # --- Save the reassembled approximation image and error map for visualization ---
+        print("\nSaving reassembled approximation image and actual error map...")
 
-    plt.tight_layout()
+        # Save the reassembled approximation image (already in [0,1] range)
+        try:
+            save_images({f"{image_name}_approx_from_coeffs_{params_suffix}.png": reassembled_approx_image}, str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR))
+        except Exception as e:
+            print(f"Error saving reassembled approximation image: {e}")
 
-    # --- Save the Plot ---\
-    # Ensure the plot filename reflects it's a reconstruction plot and shows actual error
-    plot_filename = f"{image_name}_adaptive_image_reconstruction_plot_actual_error_{params_suffix}.png"
-    plot_filepath = os.path.join(str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR), plot_filename)
+        # Save a normalized version of the actual reconstruction error for visualization
+        try:
+            save_images({f"{image_name}_actual_error_viz_from_coeffs_{params_suffix}.png": normalized_reconstruction_error_for_plot}, str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR))
+        except Exception as e:
+            print(f"Error saving actual error visualization image: {e}")
 
-    try:
-        plt.savefig(plot_filepath)
-        print(f"\nSaved adaptive image reconstruction plot to {plot_filepath}")
-    except Exception as e:
-        print(f"\nError saving adaptive image reconstruction plot to {plot_filepath}: {e}")
+        # --- Visualize Main Results (Original, Reconstructed, Error, Segmentation) ---
+        print("\nGenerating main plot...")
+        num_subplots = 4
+        fig1, axes1 = plt.subplots(1, num_subplots, figsize=(6 * num_subplots, 6))
 
-    # Close the plot figure
-    plt.close(fig)
+        # Plot 1: Original Image
+        axes1[0].imshow(original_image, cmap='gray', vmin=0, vmax=1)
+        axes1[0].set_title('Original Image')
+        axes1[0].axis('off')
+
+        # Plot 2: Approximate Image (Reconstruction from Coefficients)
+        axes1[1].imshow(reassembled_approx_image, cmap='gray', vmin=0, vmax=1)
+        axes1[1].set_title('Approximate Image (Reconstructed from Coeffs)')
+        axes1[1].axis('off')
+
+        # Plot 3: Actual Reconstruction Error Heatmap (Normalized)
+        im1 = axes1[2].imshow(normalized_reconstruction_error_for_plot, cmap='viridis', origin='upper')
+        fig1.colorbar(im1, ax=axes1[2], label='Actual Reconstruction Error (Normalized)')
+        axes1[2].set_title('Actual Reconstruction Error Heatmap')
+        axes1[2].axis('off')
+
+        # Plot 4: Reconstructed Image with Segmentation Boundaries
+        draw_segmentation_boundaries(reassembled_approx_image, final_segment_data_for_compression, axes1[3])
+
+        plt.tight_layout()
+
+        # --- Save the Main Plot ---
+        plot_filename_main = f"{image_name}_adaptive_reconstruction_plot_with_segmentation_{params_suffix}.png"
+        plot_filepath_main = os.path.join(str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR), plot_filename_main)
+
+        try:
+            plt.savefig(plot_filepath_main)
+            print(f"\nSaved main adaptive image reconstruction plot to {plot_filepath_main}")
+        except Exception as e:
+            print(f"\nError saving main adaptive image reconstruction plot to {plot_filepath_main}: {e}")
+
+        # Close the main plot figure
+        plt.close(fig1)
+
+
+        # --- Visualize Segment Error Heatmap ---
+        print("\nGenerating segment error heatmap plot...")
+        fig2, ax2 = plt.subplots(1, 1, figsize=(8, 8)) # Create a new figure for this plot
+
+        draw_segment_error_heatmap(original_image_shape, final_segment_data_for_compression, ax2, colormap='hot') # Use 'hot' colormap for errors
+
+        plt.tight_layout()
+
+        # --- Save the Segment Error Heatmap Plot ---
+        plot_filename_segment_error = f"{image_name}_segment_error_heatmap_{params_suffix}.png"
+        plot_filepath_segment_error = os.path.join(str(IMAGE_ADAPTIVE_RECONSTRUCTION_RESULTS_DIR), plot_filename_segment_error)
+
+        try:
+            plt.savefig(plot_filepath_segment_error)
+            print(f"\nSaved segment error heatmap plot to {plot_filepath_segment_error}")
+        except Exception as e:
+            print(f"\nError saving segment error heatmap plot to {plot_filepath_segment_error}: {e}")
+
+        # Close the segment error heatmap figure
+        plt.close(fig2)
+
+
+    else:
+        print("\nNo segments were successfully processed. Cannot reassemble, plot, or save.")
 
 
     print("\nAdaptive image reconstruction script finished.")
+
