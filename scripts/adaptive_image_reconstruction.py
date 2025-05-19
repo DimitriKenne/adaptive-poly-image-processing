@@ -549,7 +549,7 @@ if __name__ == "__main__":
     error_measure_type = 'mse' # 'mse', 'mae', 'rmse'
     error_threshold = 0.0001 # Threshold for the error measure M(S)
     max_depth = 15 # Maximum recursive segmentation depth (0 is the whole image). Reverted to 3.
-    min_segment_size = 5 # Added minimum segment dimension
+    min_segment_size = 2 # Added minimum segment dimension
 
     # --- Load the original image ---
     try:
