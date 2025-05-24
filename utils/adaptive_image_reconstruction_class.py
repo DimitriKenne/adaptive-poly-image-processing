@@ -11,13 +11,14 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.cm as cm
 from PIL import Image # Still needed for loading/saving images
+import multiprocessing
+from queue import Queue # Using queue for managing segments to process
 
 # Determine the project root dynamically based on the location of this file
 # If this file is in 'utils/', the project root is two levels up.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Add project root to Python path to allow importing 'config' and 'poly_approx'
 sys.path.insert(0, str(PROJECT_ROOT))
-
 
 # Import configuration from the 'config' directory
 try:
@@ -110,10 +111,211 @@ except ImportError as e:
         return [(0,0)] * total_terms
 
 
+# --- Helper function for multiprocessing pool initialization ---
+# This initializer now does nothing as we pass data directly to the worker.
+def _worker_init():
+    """Initializer for worker processes (does nothing now)."""
+    pass
+
+
+# --- Worker function for multiprocessing ---
+# This function runs in a separate process and processes a single segment task.
+# It now accepts the image segment and rectangle directly.
+def process_segment_worker(
+    task: Tuple,
+    image_segment: np.ndarray, # Pass the segment image directly
+    segment_rectangle: Tuple[float, float, float, float], # Pass the rectangle directly
+    config_params: Dict
+) -> Tuple[str, Dict, Optional[List[Tuple]]]:
+    """
+    Worker function to process a single image segment.
+
+    Args:
+        task: A tuple containing (segment_bbox, current_depth, segment_id).
+        image_segment: The image data for the current segment.
+        segment_rectangle: The rectangle tuple for the current segment.
+        config_params: Dictionary containing necessary configuration parameters.
+
+    Returns:
+        A tuple containing:
+        - segment_id: The ID of the processed segment.
+        - results_data: Dictionary containing results for this segment if it's terminal.
+                        Empty dictionary if subdivision occurs.
+        - sub_segment_tasks: List of new tasks (bbox, depth, id) if subdivision occurs,
+                             otherwise None.
+    """
+    segment_bbox, current_depth, segment_id = task
+    # We no longer need to slice the original image here, as image_segment is passed directly.
+    # segment_image = original_image[row_start:row_end, col_start:col_end]
+
+    height, width = image_segment.shape
+
+    # print(f"\n--- Worker processing segment {segment_id} at depth {current_depth} with shape {segment_image.shape} ---") # Verbose worker output
+
+    if height == 0 or width == 0:
+        # print(f"Worker skipping empty segment {segment_id}.")
+        return segment_id, {}, None # Skip empty segments
+
+    # We no longer need to calculate segment_rectangle here, as it's passed directly.
+    # original_height, original_width = original_image.shape
+    # segment_rectangle = (
+    #     col_start / original_width,
+    #     row_start / original_height,
+    #     col_end / original_width,
+    #     row_end / original_height
+    # )
+
+    # --- Step 1 & 2: Polynomial Approximation and Raw Error Map Calculation ---
+    try:
+        # Use config_params dictionary to access configuration values
+        approximation_results = image_poly_approximation_segment(
+            image_segment=image_segment, # Use the passed segment image
+            rectangle=segment_rectangle, # Use the passed rectangle
+            poly_degree=config_params['POLY_DEGREE'],
+            nodes_method=config_params['NODES_METHOD'],
+            admissible_mesh_type=config_params['ADMISSIBLE_MESH_TYPE'],
+            m_cheb=config_params['M_CHEB'],
+            poly_basis=config_params['POLY_BASIS_USED']
+        )
+        raw_error_maps = {
+            'error_original': approximation_results.get('error_original', np.zeros_like(image_segment)),
+        }
+        polynomial_coefficients = approximation_results.get('coefficients_smoothed', np.array([]))
+
+        # print(f"Worker approximation complete for segment {segment_id}.") # Verbose worker output
+
+    except Exception as e:
+        print(f"Worker Error during polynomial approximation for segment {segment_id}: {e}")
+        # Return results indicating failure
+        results_data = {
+            'bbox': segment_bbox,
+            'coefficients': np.array([]),
+            'depth': current_depth,
+            'poly_degree': config_params['POLY_DEGREE'],
+            'poly_basis': config_params['POLY_BASIS_USED'],
+            'rectangle': segment_rectangle,
+            'final_error_measure': -1.0,
+            'status': 'approximation_failed'
+        }
+        return segment_id, results_data, None
+
+
+    # --- Step 3: Evaluate Reconstruction Quality (Compute M(S)) ---
+    error_map_for_measure = raw_error_maps.get('error_original')
+
+    if error_map_for_measure is None:
+         print(f"Worker Error: Could not get 'error_original' map for error measure in segment {segment_id}.")
+         results_data = {
+             'bbox': segment_bbox,
+             'coefficients': polynomial_coefficients,
+             'depth': current_depth,
+             'poly_degree': config_params['POLY_DEGREE'],
+             'poly_basis': config_params['POLY_BASIS_USED'],
+             'rectangle': segment_rectangle,
+             'final_error_measure': -1.0,
+             'status': 'error_measure_input_missing'
+         }
+         return segment_id, results_data, None
+
+    try:
+        # Use config_params dictionary to access configuration values
+        segment_error_measure = calculate_error_measure(error_map_for_measure, measure_type=config_params['ERROR_MEASURE_TYPE'])
+        # print(f"Worker Error measure ({config_params['ERROR_MEASURE_TYPE']}) for segment {segment_id}: {segment_error_measure:.6f}") # Verbose worker output
+    except Exception as e:
+        print(f"Worker Error calculating error measure for segment {segment_id}: {e}")
+        results_data = {
+            'bbox': segment_bbox,
+            'coefficients': polynomial_coefficients,
+            'depth': current_depth,
+            'poly_degree': config_params['POLY_DEGREE'],
+            'poly_basis': config_params['POLY_BASIS_USED'],
+            'rectangle': segment_rectangle,
+            'final_error_measure': -1.0,
+            'status': 'error_measure_failed'
+        }
+        return segment_id, results_data, None
+
+
+    # --- Step 4: Decision and Refinement ---
+    # Stopping criterion met: Either error is low enough, max depth reached, or segment is too small.
+    # Use config_params dictionary to access configuration values
+    if segment_error_measure <= config_params['ERROR_THRESHOLD']:
+        # print(f"Worker Stopping for segment {segment_id}: Error measure {segment_error_measure:.6f} <= {config_params['ERROR_THRESHOLD']}.") # Verbose worker output
+        results_data = {
+            'bbox': segment_bbox,
+            'coefficients': polynomial_coefficients,
+            'depth': current_depth,
+            'poly_degree': config_params['POLY_DEGREE'],
+            'poly_basis': config_params['POLY_BASIS_USED'],
+            'rectangle': segment_rectangle,
+            'final_error_measure': segment_error_measure,
+            'status': 'terminated_by_error'
+        }
+        return segment_id, results_data, None
+
+    elif current_depth >= config_params['MAX_DEPTH']:
+         # print(f"Worker Max depth ({config_params['MAX_DEPTH']}) reached for segment {segment_id}. Stopping recursion.") # Verbose worker output
+         results_data = {
+             'bbox': segment_bbox,
+             'coefficients': polynomial_coefficients,
+             'depth': current_depth,
+             'poly_degree': config_params['POLY_DEGREE'],
+             'poly_basis': config_params['POLY_BASIS_USED'],
+             'rectangle': segment_rectangle,
+             'final_error_measure': segment_error_measure,
+             'status': 'terminated_by_depth'
+         }
+         return segment_id, results_data, None
+
+    elif height <= config_params['MIN_SEGMENT_SIZE'] or width <= config_params['MIN_SEGMENT_SIZE']:
+         # print(f"Worker Segment size ({width}x{height}) below minimum ({config_params['MIN_SEGMENT_SIZE']}) for segment {segment_id}. Stopping recursion.") # Verbose worker output
+         results_data = {
+             'bbox': segment_bbox,
+             'coefficients': polynomial_coefficients,
+             'depth': current_depth,
+             'poly_degree': config_params['POLY_DEGREE'],
+             'poly_basis': config_params['POLY_BASIS_USED'],
+             'rectangle': segment_rectangle,
+             'final_error_measure': segment_error_measure,
+             'status': 'terminated_by_size'
+         }
+         return segment_id, results_data, None
+
+    else:
+        # Error is too high and stopping criteria not met: Subdivide and return sub-segment tasks.
+        # print(f"Worker Subdividing segment {segment_id}: Error measure {segment_error_measure:.6f} > {config_params['ERROR_THRESHOLD']}.") # Verbose worker output
+
+        mid_row = segment_bbox[0] + height // 2 # Use segment_bbox to calculate midpoints
+        mid_col = segment_bbox[2] + width // 2
+
+        sub_segments_bbox = []
+        # Top-left
+        if mid_row > segment_bbox[0] and mid_col > segment_bbox[2]:
+            sub_segments_bbox.append((segment_bbox[0], mid_row, segment_bbox[2], mid_col))
+        # Top-right
+        if mid_row > segment_bbox[0] and segment_bbox[3] > mid_col:
+             sub_segments_bbox.append((segment_bbox[0], mid_row, mid_col, segment_bbox[3]))
+        # Bottom-left
+        if segment_bbox[1] > mid_row and mid_col > segment_bbox[2]:
+            sub_segments_bbox.append((mid_row, segment_bbox[1], segment_bbox[2], mid_col))
+        # Bottom-right
+        if segment_bbox[1] > mid_row and segment_bbox[3] > mid_col:
+            sub_segments_bbox.append((mid_row, segment_bbox[1], mid_col, segment_bbox[3]))
+
+        # Return the list of new sub-segment tasks
+        sub_segment_tasks = []
+        for i, sub_bbox in enumerate(sub_segments_bbox):
+             sub_segment_id = f"{segment_id}_{i}"
+             sub_segment_tasks.append((sub_bbox, current_depth + 1, sub_segment_id))
+
+        return segment_id, {}, sub_segment_tasks # Return empty results_data and the new tasks
+
+
 class AdaptivePolynomialReconstructor:
     """
     Performs adaptive image reconstruction using polynomial approximation
-    on recursively subdivided segments.
+    on recursively subdivided segments, with optional parallel processing
+    and higher-resolution output.
     """
 
     def __init__(self, config):
@@ -155,303 +357,96 @@ class AdaptivePolynomialReconstructor:
         return img
 
 
-    def process_segment(
-        self,
-        segment_bbox: Tuple[int, int, int, int], # (row_start, row_end, col_start, col_end)
-        current_depth: int,
-        segment_id: str
-    ):
-        """
-        Recursively processes an image segment for polynomial approximation and adaptive refinement.
-        Stores polynomial coefficients, basis type, segment bounding boxes, and final error measure
-        for terminal segments in self.final_segment_data.
-
-        Args:
-            segment_bbox : Tuple[int, int, int, int]
-                Bounding box of the current segment (row_start, row_end, col_start, col_end).
-            current_depth : int
-                Current recursion depth.
-            segment_id : str
-                Unique identifier for the current segment.
-        """
-        row_start, row_end, col_start, col_end = segment_bbox
-        segment_image = self.original_image[row_start:row_end, col_start:col_end]
-
-        height, width = segment_image.shape
-
-        print(f"\n--- Processing segment {segment_id} at depth {current_depth} with shape {segment_image.shape} ---")
-
-        if height == 0 or width == 0:
-            print(f"Skipping empty segment {segment_id}.")
-            return # Skip empty segments
-
-        # Define the rectangle for this segment relative to the original image [0,1]x[0,1]
-        original_height, original_width = self.original_image_shape
-        segment_rectangle = (
-            col_start / original_width,
-            row_start / original_height,
-            col_end / original_width,
-            row_end / original_height
-        )
-
-        # --- Step 1 & 2: Polynomial Approximation and Raw Error Map Calculation ---
-        try:
-            # Call image_poly_approximation_segment with the rectangle and relevant parameters
-            # This function is now expected to return coefficients as well
-            approximation_results = image_poly_approximation_segment(
-                image_segment=segment_image,
-                rectangle=segment_rectangle, # Pass the rectangle tuple
-                poly_degree=self.config.POLY_DEGREE,
-                nodes_method=self.config.NODES_METHOD,
-                admissible_mesh_type=self.config.ADMISSIBLE_MESH_TYPE,
-                m_cheb=self.config.M_CHEB,
-                poly_basis=self.config.POLY_BASIS_USED # Pass poly_basis
-            )
-            # Extract raw error maps and polynomial coefficients
-            raw_error_maps = {
-                'error_original': approximation_results.get('error_original', np.zeros_like(segment_image)),
-                # 'error_smoothed': approximation_results.get('error_smoothed', np.zeros_like(segment_image)), # Not used for M(S)
-                'diff_original_poly_smoothed': approximation_results.get('diff_original_poly_smoothed', np.zeros_like(segment_image)),
-                # 'diff_smoothed_poly_original': approximation_results.get('diff_smoothed_poly_original', np.zeros_like(segment_image)) # Not used for M(S)
-            }
-            # We will use the coefficients from the smoothed approximation for reconstruction and error evaluation
-            polynomial_coefficients = approximation_results.get('coefficients_smoothed', np.array([])) # Get the smoothed coefficients
-
-            print(f"Approximation complete for segment {segment_id}.")
-
-        except Exception as e:
-            print(f"Error during polynomial approximation for segment {segment_id}: {e}")
-            print(f"Stopping processing for segment {segment_id}.")
-            # Store empty coefficients and status for this segment if approximation fails
-            self.final_segment_data[segment_id] = {
-                'bbox': segment_bbox,
-                'coefficients': np.array([]), # Store empty coefficients
-                'depth': current_depth,
-                'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                'rectangle': segment_rectangle, # Store the segment rectangle
-                'final_error_measure': -1.0, # Indicate error during approximation
-                'status': 'approximation_failed'
-            }
-            return
-
-
-        # --- Step 3: Evaluate Reconstruction Quality (Compute M(S)) ---
-        # Calculate the error measure M(S) on a chosen RAW error map to guide subdivision.
-        # Using the raw 'error_original' map for M(S) to be more sensitive to original detail.
-        error_map_for_measure = raw_error_maps.get('error_original')
-
-        if error_map_for_measure is None:
-             print(f"Error: Could not get 'error_original' map for error measure in segment {segment_id}.")
-             print(f"Stopping processing for segment {segment_id}.")
-             self.final_segment_data[segment_id] = {
-                 'bbox': segment_bbox,
-                 'coefficients': polynomial_coefficients, # Store the coefficients
-                 'depth': current_depth,
-                 'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                 'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                 'rectangle': segment_rectangle, # Store the segment rectangle
-                 'final_error_measure': -1.0, # Indicate error during measure calculation
-                 'status': 'error_measure_input_missing'
-             }
-             return
-
-        try:
-            # Calculate error measure on the RAW error map
-            segment_error_measure = calculate_error_measure(error_map_for_measure, measure_type=self.config.ERROR_MEASURE_TYPE)
-            print(f"Error measure ({self.config.ERROR_MEASURE_TYPE}) for segment {segment_id}: {segment_error_measure:.6f}")
-        except ValueError as e:
-            print(f"Error calculating error measure for segment {segment_id}: {e}")
-            print(f"Stopping processing for segment {segment_id}.")
-            self.final_segment_data[segment_id] = {
-                'bbox': segment_bbox,
-                'coefficients': polynomial_coefficients, # Store the coefficients
-                'depth': current_depth,
-                'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                'rectangle': segment_rectangle, # Store the segment rectangle
-                'final_error_measure': -1.0, # Indicate error during measure calculation
-                'status': 'error_measure_failed'
-            }
-            return
-        except Exception as e:
-            print(f"An unexpected error occurred calculating error measure for segment {segment_id}: {e}")
-            print(f"Stopping processing for segment {segment_id}.")
-            self.final_segment_data[segment_id] = {
-                'bbox': segment_bbox,
-                'coefficients': polynomial_coefficients, # Store the coefficients
-                'depth': current_depth,
-                'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                'rectangle': segment_rectangle, # Store the segment rectangle
-                'final_error_measure': -1.0, # Indicate error during measure calculation
-                'status': 'error_measure_failed'
-            }
-            return
-
-
-        # --- Step 4: Decision and Refinement ---
-        # Stopping criterion met: Either error is low enough, max depth reached, or segment is too small.
-        if segment_error_measure <= self.config.ERROR_THRESHOLD:
-            print(f"Stopping for segment {segment_id}: Error measure {segment_error_measure:.6f} <= {self.config.ERROR_THRESHOLD}.")
-
-            # Store the segment bbox, coefficients, and final error measure for this final segment
-            self.final_segment_data[segment_id] = {
-                'bbox': segment_bbox,
-                'coefficients': polynomial_coefficients, # Store the coefficients
-                'depth': current_depth,
-                'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                'rectangle': segment_rectangle, # Store the segment rectangle
-                'final_error_measure': segment_error_measure, # Store the final error measure
-                'status': 'terminated_by_error' # Indicate termination by error
-            }
-
-        elif current_depth >= self.config.MAX_DEPTH:
-             print(f"Max depth ({self.config.MAX_DEPTH}) reached for segment {segment_id}. Stopping recursion.")
-             # Store the segment bbox, coefficients, and final error measure for this final segment
-             self.final_segment_data[segment_id] = {
-                 'bbox': segment_bbox,
-                 'coefficients': polynomial_coefficients, # Store the coefficients
-                 'depth': current_depth,
-                 'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                 'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                 'rectangle': segment_rectangle, # Store the segment rectangle
-                 'final_error_measure': segment_error_measure, # Store the final error measure
-                 'status': 'terminated_by_depth' # Indicate termination by depth
-             }
-
-        elif height <= self.config.MIN_SEGMENT_SIZE or width <= self.config.MIN_SEGMENT_SIZE:
-             print(f"Segment size ({width}x{height}) below minimum ({self.config.MIN_SEGMENT_SIZE}) for segment {segment_id}. Stopping recursion.")
-             # Store the segment bbox, coefficients, and final error measure for this final segment
-             self.final_segment_data[segment_id] = {
-                 'bbox': segment_bbox,
-                 'coefficients': polynomial_coefficients, # Store the coefficients
-                 'depth': current_depth,
-                 'poly_degree': self.config.POLY_DEGREE, # Store poly degree used
-                 'poly_basis': self.config.POLY_BASIS_USED, # Store poly basis used
-                 'rectangle': segment_rectangle, # Store the segment rectangle
-                 'final_error_measure': segment_error_measure, # Store the final error measure
-                 'status': 'terminated_by_size' # Indicate termination by size
-             }
-
-        else:
-            # Error is too high and stopping criteria not met: Subdivide and recurse.
-            print(f"Subdividing segment {segment_id}: Error measure {segment_error_measure:.6f} > {self.config.ERROR_THRESHOLD}.")
-
-            # Subdivide the segment (e.g., into 2x2 sub-segments)
-            mid_row = row_start + height // 2
-            mid_col = col_start + width // 2
-
-            sub_segments_bbox = []
-            # Top-left
-            if mid_row > row_start and mid_col > col_start:
-                sub_segments_bbox.append((row_start, mid_row, col_start, mid_col))
-            # Top-right
-            if mid_row > row_start and col_end > mid_col:
-                 sub_segments_bbox.append((row_start, mid_row, mid_col, col_end))
-            # Bottom-left
-            if row_end > mid_row and mid_col > col_start:
-                sub_segments_bbox.append((mid_row, row_end, col_start, mid_col))
-            # Bottom-right
-            if row_end > mid_row and col_end > mid_col:
-                sub_segments_bbox.append((mid_row, row_end, mid_col, col_end))
-
-            # Recursively process sub-segments
-            for i, sub_bbox in enumerate(sub_segments_bbox):
-                sub_segment_id = f"{segment_id}_{i}"
-                self.process_segment( # Recursive call uses self.process_segment
-                    sub_bbox,
-                    current_depth + 1,
-                    sub_segment_id
-                )
-
-
-    def reassemble_results_from_coefficients(self) -> np.ndarray:
+    def reassemble_results_from_coefficients(self, upscale_factor: int = 1) -> np.ndarray:
         """
         Reassembles the approximation image from stored segment bounding boxes,
         polynomial coefficients, degree, basis type, and rectangle.
+        Optionally upscales the output image.
+
+        Args:
+            upscale_factor: Integer factor to upscale the output image resolution.
+                            1 means original resolution.
 
         Returns:
             np.ndarray
-                The reassembled approximation image.
+                The reassembled approximation image. Returns an empty array if
+                original image shape is not available or no segment data.
         """
         if self.original_image_shape is None:
             print("Error: Original image not loaded. Cannot reassemble.")
             return np.array([])
 
-        height, width = self.original_image_shape
-        reassembled_approx = np.zeros(self.original_image_shape, dtype=np.float32)
+        if not self.final_segment_data:
+             print("No segment data available. Cannot reassemble.")
+             return np.array([])
+
+        original_height, original_width = self.original_image_shape
+        upscaled_height = original_height * upscale_factor
+        upscaled_width = original_width * upscale_factor
+
+        reassembled_approx = np.zeros((upscaled_height, upscaled_width), dtype=np.float32)
 
         for segment_id, results in self.final_segment_data.items():
             if 'bbox' in results and 'coefficients' in results and 'poly_degree' in results and 'poly_basis' in results and 'rectangle' in results:
                 row_start, row_end, col_start, col_end = results['bbox']
                 coefficients = results['coefficients']
                 poly_degree = results['poly_degree']
-                poly_basis = results['poly_basis'] # Get the poly_basis used for this segment
-                segment_rectangle = results['rectangle'] # Get the segment rectangle
+                poly_basis = results['poly_basis']
+                segment_rectangle = results['rectangle']
 
-                seg_height = row_end - row_start
-                seg_width = col_end - col_start
+                # Calculate upscaled bbox coordinates
+                upscaled_row_start = row_start * upscale_factor
+                upscaled_row_end = row_end * upscale_factor
+                upscaled_col_start = col_start * upscale_factor
+                upscaled_col_end = col_end * upscale_factor
 
-                # Ensure bbox coordinates are within image bounds
-                if row_start < 0 or row_end > height or col_start < 0 or col_end > width:
-                     print(f"Warning: Segment {segment_id} bbox [{row_start}:{row_end}, {col_start}:{col_end}] is out of original image bounds {self.original_image_shape}. Skipping reassembly for this segment.")
-                     continue # Skip this segment if bbox is invalid
+                upscaled_seg_height = upscaled_row_end - upscaled_row_start
+                upscaled_seg_width = upscaled_col_end - upscaled_col_start
+
+                # Ensure upscaled bbox coordinates are within the upscaled image bounds
+                if upscaled_row_start < 0 or upscaled_row_end > upscaled_height or upscaled_col_start < 0 or upscaled_col_end > upscaled_width:
+                     print(f"Warning: Upscaled segment {segment_id} bbox [{upscaled_row_start}:{upscaled_row_end}, {upscaled_col_start}:{upscaled_col_end}] is out of upscaled image bounds {(upscaled_height, upscaled_width)}. Skipping reassembly for this segment.")
+                     continue
 
                 if coefficients.size == 0:
-                     # print(f"Warning: No coefficients found for segment {segment_id}. Filling with zeros.")
-                     # Segment was likely terminated due to approximation failure, it's already zero in reassembled_approx
-                     continue # Skip to next segment if no coefficients
-
+                     continue # Skip if no coefficients
 
                 # Define the rectangle for this segment relative to the original image [0,1]x[0,1]
                 xmin, ymin, xmax, ymax = segment_rectangle
 
-                # Create a grid of points over the segment's pixel coordinates [0, width-1] x [0, height-1]
+                # Create a grid of points over the *upscaled* segment's pixel coordinates
                 # scaled to the rectangle [xmin, ymin] to [xmax, ymax] for evaluation.
-                # The evaluation grid points should be in the same domain as the input 'points' for the polynomial function.
-                x_eval_scaled = np.linspace(xmin, xmax, seg_width)
-                y_eval_scaled = np.linspace(ymin, ymax, seg_height)
+                x_eval_scaled = np.linspace(xmin, xmax, upscaled_seg_width)
+                y_eval_scaled = np.linspace(ymin, ymax, upscaled_seg_height)
                 XX_eval_scaled, YY_eval_scaled = np.meshgrid(x_eval_scaled, y_eval_scaled)
                 evaluation_points_scaled = np.vstack([XX_eval_scaled.ravel(), YY_eval_scaled.ravel()]).T
 
-                # Recreate the basis function generator 'p' using the stored poly_basis, poly_degree, and rectangle.
-                # This uses the logic from gen_vanderm2d without needing actual nodes or func_values.
                 try:
-                    # Determine the dimension based on the polynomial degree
                     poly_dimension = int((poly_degree + 1) * (poly_degree + 2) / 2)
-                    # Get the multi-indices for this degree (needed by gen_vanderm2d internally)
-                    # multi_indices = graded_lexicographic_multi_indices(poly_dimension) # Not directly used here but needed by gen_vanderm2d
-
-                    # Recreate the basis function generator based on the stored poly_basis
-                    # We need a dummy X for gen_vanderm2d, its value doesn't matter for getting 'p'
-                    dummy_X = np.zeros((1, 2)) # Just needs to be a 2D array
+                    dummy_X = np.zeros((1, 2))
                     _, basis_func_generator = gen_vanderm2d(
-                        X=dummy_X, # Dummy nodes
-                        col=poly_dimension, # Use the dimension corresponding to the degree
-                        poly_basis=poly_basis, # Use the stored poly_basis
-                        rectangle=segment_rectangle # Use the segment's rectangle
+                        X=dummy_X,
+                        col=poly_dimension,
+                        poly_basis=poly_basis,
+                        rectangle=segment_rectangle
                     )
 
-                    # Now use the imported evaluate_polynomial_from_coeffs with the recreated basis function generator
                     approx_flat = evaluate_polynomial_from_coeffs(
                         coefficients,
-                        basis_func_generator, # Use the recreated basis function generator
+                        basis_func_generator,
                         evaluation_points_scaled
-                    ).real # Take real part just in case
-
+                    ).real
 
                     # Reshape and clip
-                    reassembled_approx[row_start:row_end, col_start:col_end] = np.clip(approx_flat.reshape(seg_height, seg_width), 0, 1)
+                    reassembled_approx[upscaled_row_start:upscaled_row_end, upscaled_col_start:upscaled_col_end] = np.clip(approx_flat.reshape(upscaled_seg_height, upscaled_seg_width), 0, 1)
 
                 except Exception as e:
-                     print(f"Error evaluating polynomial for segment {segment_id}: {e}")
+                     print(f"Error evaluating polynomial for segment {segment_id} during reassembly: {e}")
                      # Fill this segment region with zeros in the reassembled image
-                     reassembled_approx[row_start:row_end, col_start:col_end] = np.zeros((seg_height, seg_width), dtype=np.float32)
-
+                     reassembled_approx[upscaled_row_start:upscaled_row_end, upscaled_col_start:upscaled_col_end] = np.zeros((upscaled_seg_height, upscaled_seg_width), dtype=np.float32)
 
         return reassembled_approx
+
 
     def draw_segmentation_boundaries(self, image: np.ndarray, ax: plt.Axes, color='red', linewidth=1):
         """
@@ -472,18 +467,33 @@ class AdaptivePolynomialReconstructor:
         ax.set_title("Reconstructed Image with Segmentation Boundaries")
         ax.axis('off')
 
+        # Determine the upscale factor used for the image being plotted
+        if self.original_image_shape is not None and image.shape == self.original_image_shape:
+            upscale_factor = 1
+        elif self.original_image_shape is not None:
+             # Calculate upscale factor based on height (assuming square pixels and consistent scaling)
+             upscale_factor = image.shape[0] / self.original_image_shape[0]
+        else:
+             upscale_factor = 1 # Assume no upscaling if original shape unknown
+
         for segment_id, results in self.final_segment_data.items():
             if 'bbox' in results:
                 row_start, row_end, col_start, col_end = results['bbox']
 
+                # Scale bbox coordinates by the upscale factor of the image being plotted
+                scaled_row_start = row_start * upscale_factor
+                scaled_row_end = row_end * upscale_factor
+                scaled_col_start = col_start * upscale_factor
+                scaled_col_end = col_end * upscale_factor
+
+
                 # Create a Rectangle patch
                 # Rectangle takes (x, y) as the lower left corner, width, height
-                # The bbox is (row_start, row_end, col_start, col_end)
-                # So, x = col_start, y = row_start, width = col_end - col_start, height = row_end - row_start
+                # So, x = scaled_col_start, y = scaled_row_start, width = scaled_col_end - scaled_col_start, height = scaled_row_end - scaled_row_start
                 rect = patches.Rectangle(
-                    (col_start, row_start), # (x, y) of lower left corner
-                    col_end - col_start,    # width
-                    row_end - row_start,    # height
+                    (scaled_col_start, scaled_row_start), # (x, y) of lower left corner
+                    scaled_col_end - scaled_col_start,    # width
+                    scaled_row_end - scaled_row_start,    # height
                     linewidth=linewidth,
                     edgecolor=color,
                     facecolor='none' # No fill
@@ -516,7 +526,7 @@ class AdaptivePolynomialReconstructor:
         # Exclude segments that failed approximation or had missing error measure input
         final_errors = [
             results['final_error_measure'] for results in self.final_segment_data.values()
-            if 'final_error_measure' in results and results['final_error_measure'] >= 0
+            if 'final_error_measure' in results and results['final_error_measure'] >= 0 # Only include valid errors
         ]
 
         if not final_errors:
@@ -529,14 +539,32 @@ class AdaptivePolynomialReconstructor:
         min_error = np.min(final_errors)
         max_error = np.max(final_errors)
         epsilon = 1e-8 # For stability
-        normalized_errors = (final_errors - min_error) / (max_error - min_error + epsilon)
+        # Handle case where all valid errors are the same
+        if max_error - min_error < epsilon:
+             normalized_errors = np.zeros_like(final_errors) # All errors are the same, normalize to 0
+        else:
+             normalized_errors = (final_errors - min_error) / (max_error - min_error + epsilon)
+
 
         # Create a mapping from segment_id to its normalized error
-        segment_normalized_error = {
-            segment_id: (results['final_error_measure'] - min_error) / (max_error - min_error + epsilon)
-            for segment_id, results in self.final_segment_data.items()
+        segment_normalized_error = {}
+        valid_segments_data = {
+            segment_id: results for segment_id, results in self.final_segment_data.items()
             if 'final_error_measure' in results and results['final_error_measure'] >= 0
         }
+
+        if valid_segments_data:
+            min_valid_error = min(results['final_error_measure'] for results in valid_segments_data.values())
+            max_valid_error = max(results['final_error_measure'] for results in valid_segments_data.values())
+
+            for segment_id, results in valid_segments_data.items():
+                 error_val = results['final_error_measure']
+                 if max_valid_error - min_valid_error < epsilon:
+                      normalized_err = 0.0 # All valid errors are the same
+                 else:
+                      normalized_err = (error_val - min_valid_error) / (max_valid_error - min_valid_error + epsilon)
+                 segment_normalized_error[segment_id] = normalized_err
+
 
         # Fill the heatmap image with normalized error values for each segment
         for segment_id, results in self.final_segment_data.items():
@@ -553,6 +581,138 @@ class AdaptivePolynomialReconstructor:
         fig.colorbar(im, ax=ax, label=f'Final Segment Error ({self.config.ERROR_MEASURE_TYPE}, Normalized)')
         ax.set_title(f'Segment Error Heatmap ({self.config.ERROR_MEASURE_TYPE})')
         ax.axis('off')
+
+    def plot_error_distribution(self):
+        """Plots a histogram of the final segment error measures."""
+        if not self.final_segment_data:
+            print("No segment data available. Cannot plot error distribution.")
+            return
+
+        final_errors = [
+            results['final_error_measure'] for results in self.final_segment_data.values()
+            if 'final_error_measure' in results and results['final_error_measure'] >= 0 # Only include valid errors
+        ]
+
+        if not final_errors:
+            print("No valid final error measures found. Cannot plot error distribution.")
+            return
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.hist(final_errors, bins=50, edgecolor='black')
+        ax.set_title(f'Distribution of Final Segment Errors ({self.config.ERROR_MEASURE_TYPE})')
+        ax.set_xlabel(f'Final Segment Error ({self.config.ERROR_MEASURE_TYPE})')
+        ax.set_ylabel('Number of Segments')
+        plt.tight_layout()
+
+        # Save the plot
+        if self.image_adaptive_results_dir:
+            params_suffix = (
+                f"deg{self.config.POLY_DEGREE}_{self.config.NODES_METHOD}"
+                f"_measure-{self.config.ERROR_MEASURE_TYPE}_errthresh{str(self.config.ERROR_THRESHOLD).replace('.', 'p')}_depth{self.config.MAX_DEPTH}_min{self.config.MIN_SEGMENT_SIZE}"
+                f"_basis{self.config.POLY_BASIS_USED}"
+            )
+            plot_filename = f"{self.config.IMAGE_NAME}_error_distribution_{params_suffix}.png"
+            plot_filepath = os.path.join(str(self.image_adaptive_results_dir), plot_filename)
+            try:
+                plt.savefig(plot_filepath)
+                print(f"Saved error distribution plot to {plot_filepath}")
+            except Exception as e:
+                print(f"Error saving error distribution plot to {plot_filepath}: {e}")
+        else:
+             print("Results directory not set. Skipping saving error distribution plot.")
+
+        plt.close(fig)
+
+
+    def plot_depth_segment_count(self):
+        """Plots the number of segments at each depth level."""
+        if not self.final_segment_data:
+            print("No segment data available. Cannot plot depth vs. segment count.")
+            return
+
+        depth_counts = {}
+        for results in self.final_segment_data.values():
+            depth = results.get('depth', -1) # Use -1 for segments without depth info
+            if depth >= 0:
+                 depth_counts[depth] = depth_counts.get(depth, 0) + 1
+
+        if not depth_counts:
+            print("No valid depth information found in segment data. Cannot plot depth vs. segment count.")
+            return
+
+        depths = sorted(depth_counts.keys())
+        counts = [depth_counts[d] for d in depths]
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.bar(depths, counts, edgecolor='black')
+        ax.set_title('Number of Segments per Depth Level')
+        ax.set_xlabel('Depth Level')
+        ax.set_ylabel('Number of Segments')
+        ax.set_xticks(depths) # Ensure all depths are shown as ticks
+        plt.tight_layout()
+
+        # Save the plot
+        if self.image_adaptive_results_dir:
+            params_suffix = (
+                f"deg{self.config.POLY_DEGREE}_{self.config.NODES_METHOD}"
+                f"_measure-{self.config.ERROR_MEASURE_TYPE}_errthresh{str(self.config.ERROR_THRESHOLD).replace('.', 'p')}_depth{self.config.MAX_DEPTH}_min{self.config.MIN_SEGMENT_SIZE}"
+                f"_basis{self.config.POLY_BASIS_USED}"
+            )
+            plot_filename = f"{self.config.IMAGE_NAME}_depth_segment_count_{params_suffix}.png"
+            plot_filepath = os.path.join(str(self.image_adaptive_results_dir), plot_filename)
+            try:
+                plt.savefig(plot_filepath)
+                print(f"Saved depth vs. segment count plot to {plot_filepath}")
+            except Exception as e:
+                print(f"Error saving depth vs. segment count plot to {plot_filepath}: {e}")
+        else:
+             print("Results directory not set. Skipping saving depth vs. segment count plot.")
+
+        plt.close(fig)
+
+    def plot_segment_size_distribution(self):
+        """Plots a histogram of the final segment sizes (area)."""
+        if not self.final_segment_data:
+            print("No segment data available. Cannot plot segment size distribution.")
+            return
+
+        segment_sizes = []
+        for results in self.final_segment_data.values():
+            if 'bbox' in results:
+                 row_start, row_end, col_start, col_end = results['bbox']
+                 height = row_end - row_start
+                 width = col_end - col_start
+                 segment_sizes.append(height * width)
+
+        if not segment_sizes:
+            print("No valid segment bounding boxes found. Cannot plot segment size distribution.")
+            return
+
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.hist(segment_sizes, bins=50, edgecolor='black') # Adjust bins as needed
+        ax.set_title('Distribution of Final Segment Sizes (Pixels)')
+        ax.set_xlabel('Segment Size (Area in Pixels)')
+        ax.set_ylabel('Number of Segments')
+        plt.tight_layout()
+
+        # Save the plot
+        if self.image_adaptive_results_dir:
+            params_suffix = (
+                f"deg{self.config.POLY_DEGREE}_{self.config.NODES_METHOD}"
+                f"_measure-{self.config.ERROR_MEASURE_TYPE}_errthresh{str(self.config.ERROR_THRESHOLD).replace('.', 'p')}_depth{self.config.MAX_DEPTH}_min{self.config.MIN_SEGMENT_SIZE}"
+                f"_basis{self.config.POLY_BASIS_USED}"
+            )
+            plot_filename = f"{self.config.IMAGE_NAME}_segment_size_distribution_{params_suffix}.png"
+            plot_filepath = os.path.join(str(self.image_adaptive_results_dir), plot_filename)
+            try:
+                plt.savefig(plot_filepath)
+                print(f"Saved segment size distribution plot to {plot_filepath}")
+            except Exception as e:
+                print(f"Error saving segment size distribution plot to {plot_filepath}: {e}")
+        else:
+             print("Results directory not set. Skipping saving segment size distribution plot.")
+
+        plt.close(fig)
 
 
     def run_reconstruction(self):
@@ -586,12 +746,105 @@ class AdaptivePolynomialReconstructor:
         print(f"\nStarting adaptive image reconstruction for {self.config.IMAGE_FILENAME}...")
         start_time = time.time()
 
-        # Start the recursive processing from the root segment
-        self.process_segment(
-            initial_bbox,
-            0, # Start at depth 0
-            initial_segment_id
+        # --- Parallel Processing Setup ---
+        num_processes = self.config.NUM_PROCESSES
+        if num_processes is None or num_processes <= 0:
+            num_processes = 1 # Use single process if None or non-positive
+
+        print(f"Using {num_processes} processes for segment processing.")
+
+        # Use a Queue to manage segments that need processing
+        segment_queue = Queue()
+        # For the initial segment, get the image data and rectangle
+        row_start, row_end, col_start, col_end = initial_bbox
+        initial_segment_image = self.original_image[row_start:row_end, col_start:col_end]
+        original_height, original_width = self.original_image_shape
+        initial_segment_rectangle = (
+            col_start / original_width,
+            row_start / original_height,
+            col_end / original_width,
+            row_end / original_height
         )
+        # Put the initial task with image data and rectangle into the queue
+        segment_queue.put((initial_bbox, 0, initial_segment_id, initial_segment_image, initial_segment_rectangle))
+
+
+        # List to store results from the worker processes
+        results_from_workers = []
+
+        # Prepare a picklable dictionary of necessary config parameters for the worker
+        worker_config_params = {
+            'POLY_DEGREE': self.config.POLY_DEGREE,
+            'NODES_METHOD': self.config.NODES_METHOD,
+            'ADMISSIBLE_MESH_TYPE': self.config.ADMISSIBLE_MESH_TYPE,
+            'M_CHEB': self.config.M_CHEB,
+            'POLY_BASIS_USED': self.config.POLY_BASIS_USED,
+            'ERROR_MEASURE_TYPE': self.config.ERROR_MEASURE_TYPE,
+            'ERROR_THRESHOLD': self.config.ERROR_THRESHOLD,
+            'MAX_DEPTH': self.config.MAX_DEPTH,
+            'MIN_SEGMENT_SIZE': self.config.MIN_SEGMENT_SIZE,
+            # Add other necessary config parameters here if used by the worker
+        }
+
+
+        # Use a Pool of workers. No initializer needed as data is passed directly.
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            # While there are segments in the queue, submit tasks to the pool
+            # We need a way to track active tasks to know when to stop waiting for results
+            active_results = []
+
+            # Initially submit the first task
+            if not segment_queue.empty():
+                 task_with_data = segment_queue.get()
+                 # Pass task (bbox, depth, id), image_segment, rectangle, and config_params
+                 result = pool.apply_async(process_segment_worker, args=(task_with_data[:3], task_with_data[3], task_with_data[4], worker_config_params))
+                 active_results.append(result)
+
+
+            # Process results and add new tasks until no more active tasks and the queue is empty
+            while active_results or not segment_queue.empty():
+                # Check for completed tasks
+                completed_results = [r for r in active_results if r.ready()]
+                active_results = [r for r in active_results if not r.ready()] # Keep only pending results
+
+                for result in completed_results:
+                    try:
+                        segment_id, results_data, sub_segment_tasks = result.get() # Get the result from the worker
+                        if results_data:
+                            # This was a terminal segment, store its data
+                            self.final_segment_data[segment_id] = results_data
+                        if sub_segment_tasks:
+                            # This segment was subdivided, add new tasks to the queue
+                            for sub_task_bbox, sub_task_depth, sub_task_id in sub_segment_tasks:
+                                # Get the image data and rectangle for the new sub-task
+                                # Access bbox elements by index directly in slicing
+                                sub_segment_image = self.original_image[sub_task_bbox[0]:sub_task_bbox[1], sub_task_bbox[2]:sub_task_bbox[3]]
+                                sub_segment_rectangle = (
+                                    sub_task_bbox[2] / original_width, # col_start / original_width
+                                    sub_task_bbox[0] / original_height, # row_start / original_height
+                                    sub_task_bbox[3] / original_width, # col_end / original_width
+                                    sub_task_bbox[1] / original_height # row_end / original_height
+                                )
+                                # Put the new task with image data and rectangle into the queue
+                                segment_queue.put((sub_task_bbox, sub_task_depth, sub_task_id, sub_segment_image, sub_segment_rectangle))
+
+                    except Exception as e:
+                        print(f"Error collecting result from worker: {e}")
+                        # Handle potential errors from worker processes
+
+                # If there are tasks in the queue and the pool is not saturated, submit more
+                # Simple heuristic: submit up to num_processes * 2 tasks ahead
+                while not segment_queue.empty() and len(active_results) < num_processes * 2:
+                    task_with_data = segment_queue.get()
+                    # Pass task (bbox, depth, id), image_segment, rectangle, and config_params
+                    result = pool.apply_async(process_segment_worker, args=(task_with_data[:3], task_with_data[3], task_with_data[4], worker_config_params))
+                    active_results.append(result)
+
+                # Add a small sleep to prevent busy-waiting if the queue is temporarily empty
+                if not active_results and segment_queue.empty():
+                     break # Exit loop if no active tasks and queue is empty
+                time.sleep(0.01) # Sleep briefly
+
 
         end_time = time.time()
         print(f"\nAdaptive image reconstruction finished in {end_time - start_time:.4f} seconds.")
@@ -607,6 +860,7 @@ class AdaptivePolynomialReconstructor:
                 # f"_sigma{self.config.SIGMA:.1f}" # Include sigma if added to config
                 f"_measure-{self.config.ERROR_MEASURE_TYPE}_errthresh{str(self.config.ERROR_THRESHOLD).replace('.', 'p')}_depth{self.config.MAX_DEPTH}_min{self.config.MIN_SEGMENT_SIZE}"
                 f"_basis{self.config.POLY_BASIS_USED}" # Add basis to filename
+                f"_procs{num_processes}" # Add number of processes
             )
 
             # Filename for the saved data
@@ -627,12 +881,26 @@ class AdaptivePolynomialReconstructor:
         # This step acts as a 'decoding' process to reconstruct the image from the saved data.
         print("\nReassembling final approximation image from coefficients...")
         if self.final_segment_data:
-            reassembled_approx_image = self.reassemble_results_from_coefficients()
+            # Reassemble at the specified upscale factor
+            reassembled_approx_image = self.reassemble_results_from_coefficients(self.config.UPSCALE_FACTOR)
             print("Reassembly from coefficients complete.")
 
             if reassembled_approx_image.size > 0:
                 # --- Calculate the actual reconstruction error on the reassembled image ---
-                actual_reconstruction_error_map = np.abs(self.original_image - reassembled_approx_image)
+                # Note: Error is calculated against the ORIGINAL image, not an upscaled version of it.
+                # If you want to compare against a high-res ground truth, you would load that here.
+                # For now, we'll downscale the upscaled reconstruction for error calculation against original.
+                # A more rigorous approach might involve evaluating the polynomial at original pixel locations.
+                # Let's stick to downscaling the reassembled image for simplicity in error calculation for now.
+
+                # Downscale the reassembled image to the original image shape for error comparison
+                # Use PIL for resizing
+                reassembled_approx_original_size = np.array(Image.fromarray((reassembled_approx_image * 255).astype(np.uint8), 'L').resize(
+                    (self.original_image_shape[1], self.original_image_shape[0]), Image.Resampling.LANCZOS
+                ), dtype=np.float32) / 255.0
+
+
+                actual_reconstruction_error_map = np.abs(self.original_image - reassembled_approx_original_size)
 
                 # Normalize the actual reconstruction error for visualization
                 normalized_reconstruction_error_for_plot = normalize_error_image(actual_reconstruction_error_map)
@@ -644,11 +912,14 @@ class AdaptivePolynomialReconstructor:
                     # f"_sigma{self.config.SIGMA:.1f}" # Include sigma if added to config
                     f"_measure-{self.config.ERROR_MEASURE_TYPE}_errthresh{str(self.config.ERROR_THRESHOLD).replace('.', 'p')}_depth{self.config.MAX_DEPTH}_min{self.config.MIN_SEGMENT_SIZE}"
                     f"_basis{self.config.POLY_BASIS_USED}"
+                    f"_procs{num_processes}"
+                    f"_upscale{self.config.UPSCALE_FACTOR}" # Add upscale factor
                 )
 
                 if self.config.SAVE_RECONSTRUCTED_IMAGE:
                     print("\nSaving reassembled approximation image...")
                     try:
+                        # Save the upscaled image
                         save_images({f"{self.config.IMAGE_NAME}_approx_from_coeffs_{params_suffix}.png": reassembled_approx_image}, str(self.image_adaptive_results_dir))
                     except Exception as e:
                         print(f"Error saving reassembled approximation image: {e}")
@@ -656,6 +927,7 @@ class AdaptivePolynomialReconstructor:
                 if self.config.SAVE_ERROR_MAP_VIZ:
                     print("\nSaving actual error visualization image...")
                     try:
+                        # Save the error map calculated against the original size
                         save_images({f"{self.config.IMAGE_NAME}_actual_error_viz_from_coeffs_{params_suffix}.png": normalized_reconstruction_error_for_plot}, str(self.image_adaptive_results_dir))
                     except Exception as e:
                         print(f"Error saving actual error visualization image: {e}")
@@ -672,18 +944,18 @@ class AdaptivePolynomialReconstructor:
                     axes1[0].set_title('Original Image')
                     axes1[0].axis('off')
 
-                    # Plot 2: Approximate Image (Reconstruction from Coefficients)
+                    # Plot 2: Approximate Image (Reconstruction from Coefficients - potentially upscaled)
                     axes1[1].imshow(reassembled_approx_image, cmap='gray', vmin=0, vmax=1)
-                    axes1[1].set_title('Approximate Image (Reconstructed from Coeffs)')
+                    axes1[1].set_title(f'Approximate Image (Reconstructed from Coeffs, Upscale {self.config.UPSCALE_FACTOR}x)')
                     axes1[1].axis('off')
 
-                    # Plot 3: Actual Reconstruction Error Heatmap (Normalized)
+                    # Plot 3: Actual Reconstruction Error Heatmap (Normalized - against original)
                     im1 = axes1[2].imshow(normalized_reconstruction_error_for_plot, cmap=self.config.ERROR_HEATMAP_COLORMAP, origin='upper')
                     fig1.colorbar(im1, ax=axes1[2], label='Actual Reconstruction Error (Normalized)')
-                    axes1[2].set_title('Actual Reconstruction Error Heatmap')
+                    axes1[2].set_title('Actual Reconstruction Error Heatmap (vs Original)')
                     axes1[2].axis('off')
 
-                    # Plot 4: Reconstructed Image with Segmentation Boundaries
+                    # Plot 4: Reconstructed Image with Segmentation Boundaries (on the upscaled image)
                     self.draw_segmentation_boundaries(reassembled_approx_image, axes1[3])
 
                     plt.tight_layout()
@@ -724,6 +996,17 @@ class AdaptivePolynomialReconstructor:
                     # Close the segment error heatmap figure
                     plt.close(fig2)
 
+                # --- Generate Additional Visualization Plots ---
+                if self.config.SAVE_ERROR_DISTRIBUTION_PLOT:
+                     self.plot_error_distribution()
+
+                if self.config.SAVE_DEPTH_SEGMENT_COUNT_PLOT:
+                     self.plot_depth_segment_count()
+
+                if self.config.SAVE_SEGMENT_SIZE_DISTRIBUTION_PLOT:
+                     self.plot_segment_size_distribution()
+
+
             else:
                  print("Reassembled image is empty. Skipping visualization and saving.")
 
@@ -735,7 +1018,18 @@ class AdaptivePolynomialReconstructor:
         print("\nAdaptive image reconstruction process finished.")
 
 
+# --- Helper function for multiprocessing pool initialization ---
+# This initializer now does nothing as we pass data directly to the worker.
+def _worker_init():
+    """Initializer for worker processes (does nothing now)."""
+    pass
+
+
 if __name__ == "__main__":
+    # Ensure the script is run as the main program when using multiprocessing
+    # This is crucial on Windows for the 'spawn' start method
+    multiprocessing.freeze_support()
+
     # Instantiate the reconstructor with the loaded configuration
     reconstructor = AdaptivePolynomialReconstructor(config)
 
