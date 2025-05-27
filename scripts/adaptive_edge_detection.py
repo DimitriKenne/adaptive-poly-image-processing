@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import the AdaptiveEdgeDetector class from utils
 try:
-    from utils.edge_detectors import AdaptiveEdgeDetector
+    from utils.edge_detector import AdaptiveEdgeDetector
 except ImportError:
     print("Error: Could not import AdaptiveEdgeDetector from utils.edge_detectors.")
     print("Please ensure utils/edge_detectors.py exists and is in your Python path.")

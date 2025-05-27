@@ -92,7 +92,7 @@ ERROR_COMBINATION_WEIGHTS: Dict[str, float] = {
 # Provide a list of keys from ['error_original', 'error_smoothed', 'diff_original_poly_smoothed', 'diff_smoothed_poly_original']
 # These raw maps will be normalized (over the segment for adaptive, over full image for simple before thresholding)
 # before thresholding and logical combination.
-LOGICAL_OP_ERROR_KEYS: List[str] = ['error_original', 'diff_original_poly_smoothed']
+LOGICAL_OP_ERROR_KEYS: List[str] = ['error_original', 'diff_original_poly_smoothed', 'diff_smoothed_poly_original']
 
 # Type of thresholding to apply to the combined error map (or individual maps for logical ops)
 # 'fixed': Use a fixed threshold (0.0 to 1.0)
@@ -131,7 +131,7 @@ EDGE_STRATEGIES_TO_COMPARE: List[str] = [
 # ... other configurations ...
 
 # Parameters for dynamic error threshold
-INITIAL_ERROR_THRESHOLD = 0.05  # Starting error threshold at depth 0
+INITIAL_ERROR_THRESHOLD = 0.1  # Starting error threshold at depth 0
 ERROR_DECAY_RATE = 0.20        # Percentage decrease per depth level (e.g., 0.10 for 10% decrease)
 
 # ... rest of your config file ...
