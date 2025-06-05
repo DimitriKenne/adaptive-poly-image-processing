@@ -165,6 +165,7 @@ def process_segment_worker(
             'diff_smoothed_poly_original': approximation_results.get('diff_smoothed_poly_original', np.zeros_like(image_segment)),
         }
         polynomial_coefficients_for_reconstruction = approximation_results.get('coefficients_original', np.array([]))
+        segment_computation_time = approximation_results.get('computation_time', 0.0) # Capture computation time
 
         if polynomial_coefficients_for_reconstruction.size == 0 or np.any(np.isnan(polynomial_coefficients_for_reconstruction)) or np.any(np.isinf(polynomial_coefficients_for_reconstruction)):
             raise ValueError("Polynomial coefficients are invalid (empty, NaN, or Inf).")
@@ -182,12 +183,23 @@ def process_segment_worker(
             'rectangle': segment_rectangle,
             'final_error_measure': -1.0,
             'status': 'approximation_failed',
-            'raw_error_maps': {key: np.zeros_like(image_segment) for key in ['error_original', 'error_smoothed', 'diff_original_poly_smoothed', 'diff_smoothed_poly_original']}
+            'raw_error_maps': {key: np.zeros_like(image_segment) for key in ['error_original', 'error_smoothed', 'diff_original_poly_smoothed', 'diff_smoothed_poly_original']},
+            'computation_time': 0.0, # Add default 0 time on failure
+            'max_absolute_error': -1.0, # Add default -1 on failure
+            'std_dev_error': -1.0 # Add default -1 on failure
         }
         return segment_id, results_data, None
 
     # --- Step 3: Evaluate Reconstruction Quality (Compute M(S)) ---
     error_map_for_measure = raw_error_maps.get('error_original')
+
+    # Calculate additional error metrics for this segment
+    segment_max_abs_error = -1.0
+    segment_std_dev_error = -1.0
+    if error_map_for_measure is not None and error_map_for_measure.size > 0:
+        segment_max_abs_error = np.max(np.abs(error_map_for_measure))
+        segment_std_dev_error = np.std(error_map_for_measure)
+
 
     if error_map_for_measure is None:
          print(f"Worker Error: Could not get 'error_original' map for error measure in segment {segment_id}.")
@@ -200,7 +212,10 @@ def process_segment_worker(
              'rectangle': segment_rectangle,
              'final_error_measure': -1.0,
              'status': 'error_measure_input_missing',
-             'raw_error_maps': raw_error_maps
+             'raw_error_maps': raw_error_maps,
+             'computation_time': segment_computation_time,
+             'max_absolute_error': segment_max_abs_error,
+             'std_dev_error': segment_std_dev_error
          }
          return segment_id, results_data, None
 
@@ -218,7 +233,10 @@ def process_segment_worker(
             'rectangle': segment_rectangle,
             'final_error_measure': -1.0,
             'status': 'error_measure_failed',
-            'raw_error_maps': raw_error_maps
+            'raw_error_maps': raw_error_maps,
+            'computation_time': segment_computation_time,
+            'max_absolute_error': segment_max_abs_error,
+            'std_dev_error': segment_std_dev_error
         }
         return segment_id, results_data, None
 
@@ -235,7 +253,10 @@ def process_segment_worker(
             'rectangle': segment_rectangle,
             'final_error_measure': segment_error_measure,
             'status': 'terminated_by_error',
-            'raw_error_maps': raw_error_maps
+            'raw_error_maps': raw_error_maps,
+            'computation_time': segment_computation_time, # Store segment-specific computation time
+            'max_absolute_error': segment_max_abs_error, # Store max abs error
+            'std_dev_error': segment_std_dev_error # Store std dev error
         }
         return segment_id, results_data, None
 
@@ -250,7 +271,10 @@ def process_segment_worker(
              'rectangle': segment_rectangle,
              'final_error_measure': segment_error_measure,
              'status': 'terminated_by_depth',
-             'raw_error_maps': raw_error_maps
+             'raw_error_maps': raw_error_maps,
+             'computation_time': segment_computation_time,
+             'max_absolute_error': segment_max_abs_error,
+             'std_dev_error': segment_std_dev_error
          }
          return segment_id, results_data, None
 
@@ -265,7 +289,10 @@ def process_segment_worker(
              'rectangle': segment_rectangle,
              'final_error_measure': segment_error_measure,
              'status': 'terminated_by_size',
-             'raw_error_maps': raw_error_maps
+             'raw_error_maps': raw_error_maps,
+             'computation_time': segment_computation_time,
+             'max_absolute_error': segment_max_abs_error,
+             'std_dev_error': segment_std_dev_error
          }
          return segment_id, results_data, None
 
@@ -276,14 +303,15 @@ def process_segment_worker(
         mid_col = segment_bbox[2] + width // 2
 
         sub_segments_bbox = []
+        # Ensure that sub-segments have valid dimensions
         if mid_row > segment_bbox[0] and mid_col > segment_bbox[2]:
-            sub_segments_bbox.append((segment_bbox[0], mid_row, segment_bbox[2], mid_col))
+            sub_segments_bbox.append((segment_bbox[0], mid_row, segment_bbox[2], mid_col)) # Top-Left
         if mid_row > segment_bbox[0] and segment_bbox[3] > mid_col:
-             sub_segments_bbox.append((segment_bbox[0], mid_row, mid_col, segment_bbox[3]))
+             sub_segments_bbox.append((segment_bbox[0], mid_row, mid_col, segment_bbox[3])) # Top-Right
         if segment_bbox[1] > mid_row and mid_col > segment_bbox[2]:
-            sub_segments_bbox.append((mid_row, segment_bbox[1], segment_bbox[2], mid_col))
+            sub_segments_bbox.append((mid_row, segment_bbox[1], segment_bbox[2], mid_col)) # Bottom-Left
         if segment_bbox[1] > mid_row and segment_bbox[3] > mid_col:
-            sub_segments_bbox.append((mid_row, segment_bbox[1], mid_col, segment_bbox[3]))
+            sub_segments_bbox.append((mid_row, segment_bbox[1], mid_col, segment_bbox[3])) # Bottom-Right
 
         sub_segment_tasks = []
         for i, sub_bbox in enumerate(sub_segments_bbox):
@@ -874,7 +902,6 @@ class AdaptivePolynomialReconstructor:
             print("\nNo segments were successfully processed. Cannot reassemble, plot, or save.")
 
         return params_suffix, self.original_image_shape, self.config.UPSCALE_FACTOR
-
 
 # --- Helper function for multiprocessing pool initialization ---
 def _worker_init():

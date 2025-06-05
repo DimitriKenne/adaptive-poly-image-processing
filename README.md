@@ -96,7 +96,7 @@ To set up and run this project, follow these steps:
 
 1. Clone the Repository:  
    Navigate to the directory where you want to store the project and clone the repository:  
-   git clone https://github.com/your-username/your-repo-name.git \# Replace with your actual repo URL  
+   git clone [https://github.com/DimitriKenne/adaptive-poly-image-processing.git](https://github.com/DimitriKenne/adaptive-poly-image-processing.git)  
    cd your-repo-name
 
 2. Create a Python Virtual Environment (Recommended):  
@@ -151,7 +151,7 @@ This script will create a new top-level directory named overleaf\_exports/ in yo
 
 **Example of including a shortened figure in your LaTeX document:**
 
-\\includegraphics\[width=0.45\\textwidth\]{overleaf\_exports/edge\_detection\_results/shepp\_logan\_phantom/shepp\_logan\_phantom\_comp\_d5e0001sWS.pdf}
+\includegraphics\[width=0.45\\textwidth\]{overleaf\_exports/edge\_detection\_results/shepp\_logan\_phantom/shepp\_logan\_phantom\_comp\_d5e0001sWS.pdf}
 
 *(Note: The exact shortened filename will depend on the original plot type and parameters.)*
 
