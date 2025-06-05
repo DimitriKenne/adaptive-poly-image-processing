@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import os # Import the os module for creating directories
-from typing import List # Import List for type hinting
+from typing import List, Dict, Union # Import List for type hinting
 
 # Add project root to Python path
 # This allows importing modules from the project's root directory
@@ -18,6 +18,39 @@ SCRIPT_RESULTS_DIR = BASE_RESULTS_DIR / "admissible_mesh_tests"
 
 # Ensure the results directory and the script-specific subfolder exist
 os.makedirs(SCRIPT_RESULTS_DIR, exist_ok=True)
+
+# --- Global Matplotlib Plotting Parameters for High Quality Output ---
+MATPLOTLIB_PARAMS: Dict[str, Union[str, int, float, bool, List[str]]] = {
+    # "text.usetex": True, # Uncomment if you have LaTeX installed
+    # "font.family": "serif",
+    # "font.serif": ["Computer Modern Roman"],
+
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif"],
+
+    "font.size": 10,
+    "axes.labelsize": 10,
+    "legend.fontsize": 9,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "figure.titlesize": 12,
+
+    "lines.linewidth": 1.5,
+    "lines.markersize": 6,
+
+    "figure.autolayout": True,
+    "savefig.dpi": 600, # High DPI for raster images
+    "savefig.format": "pdf", # Prefer vector format
+    "figure.figsize": (8, 8), # Default figure size for single plots
+
+    "axes.grid": True,
+    "grid.linestyle": ':',
+    "grid.alpha": 0.6,
+}
+
+# Specific DPI for raster images (PNG) when saving
+PLOT_DPI = 600
+
 
 # Assuming your project structure is something like:
 # your_project/
@@ -45,6 +78,9 @@ except ImportError as e:
 
 
 if __name__ == "__main__":
+    # Apply global Matplotlib settings
+    plt.rcParams.update(MATPLOTLIB_PARAMS)
+
     if using_dummy_functions:
         sys.exit(1) # Exit if the necessary module could not be imported
 
@@ -82,7 +118,7 @@ if __name__ == "__main__":
             print(f"Generated Chebyshev mesh with {num_cheby_points} points.")
 
             # --- Visualize the Mesh ---
-            fig, ax = plt.subplots(1, 1, figsize=(8, 8)) # Single subplot
+            fig, ax = plt.subplots(1, 1, figsize=(MATPLOTLIB_PARAMS["figure.figsize"][0], MATPLOTLIB_PARAMS["figure.figsize"][1])) # Use configured figsize
 
             # Plot Chebyshev Mesh
             if num_cheby_points > 0:
@@ -99,12 +135,12 @@ if __name__ == "__main__":
             plt.tight_layout()
 
             # --- Save the figure to the script-specific results subfolder ---
-            plot_filename = f"admissible_mesh_deg{deg}_cheb_m{m_cheb}.png"
+            plot_filename = f"admissible_mesh_deg{deg}_cheb_m{m_cheb}.{MATPLOTLIB_PARAMS['savefig.format']}"
             # Use os.path.join for robust path creation
             plot_filepath = os.path.join(str(SCRIPT_RESULTS_DIR), plot_filename)
 
             try:
-                plt.savefig(plot_filepath)
+                plt.savefig(plot_filepath, dpi=PLOT_DPI, format=MATPLOTLIB_PARAMS['savefig.format'])
                 print(f"Saved plot to {plot_filepath}")
             except Exception as e:
                 print(f"Error saving plot to {plot_filepath}: {e}")

@@ -6,7 +6,6 @@ from typing import Dict, Optional, Tuple
 try:
     from skimage.filters import threshold_otsu
     from skimage.morphology import disk, binary_dilation
-    # Removed find_boundaries as it's not used in the current functions
     _skimage_available = True
 except ImportError:
     print("Warning: scikit-image not found. Some functions (Otsu, morphology) will not be available.")
@@ -15,41 +14,13 @@ except ImportError:
 # Import scipy for gradient calculation
 try:
     from scipy.ndimage import gaussian_filter
-    # Removed laplacian as it's not used
     _scipy_available = True
 except ImportError:
     print("Warning: scipy not found. Gradient calculation will not be available.")
     _scipy_available = False
 
-
-def normalize_error_image(error_image: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
-    """
-    Normalize an error image to the range [0, 1] using min-max scaling.
-
-    Parameters
-    ----------
-    error_image : np.ndarray
-        The input error image (2D numpy array).
-    epsilon : float, optional
-        Small constant to prevent division by zero. Default is 1e-8.
-
-    Returns
-    -------
-    np.ndarray
-        The normalized error image in the range [0, 1].
-    """
-    if error_image.size == 0:
-        return np.zeros_like(error_image, dtype=np.float32)
-
-    min_val = np.min(error_image)
-    max_val = np.max(error_image)
-
-    # Handle constant image case
-    if max_val - min_val < epsilon:
-        return np.zeros_like(error_image, dtype=np.float32) if np.all(error_image < epsilon) else np.full_like(error_image, 0.5, dtype=np.float32)
-
-    normalized_error = (error_image - min_val) / (max_val - min_val + epsilon)
-    return np.clip(normalized_error, 0, 1).astype(np.float32)
+# Import normalize_error_image from image_reconstruction_metrics
+from poly_approx.image_reconstruction_metrics import normalize_error_image
 
 
 def combine_errors(
@@ -65,7 +36,7 @@ def combine_errors(
     error_dict : Dict[str, np.ndarray]
         Normalized error images ([0, 1]). All must have the same shape.
     strategy : str, optional
-        Combination method: 'max', 'weighted_sum', 'logical_and', 'logical_or'.
+        Combination method: 'max', 'weighted_sum'.
         Default is 'max'.
     weights : Optional[Dict[str, float]], optional
         Weights for 'weighted_sum'. Keys must match error_dict keys.
@@ -81,9 +52,6 @@ def combine_errors(
         If invalid strategy, or weights mismatch/missing for 'weighted_sum'.
     """
     if not error_dict:
-        # Handle empty error_dict case; need a shape reference or default
-        # Returning a zero array of arbitrary small size or raising an error might be better
-        # depending on how this is handled by the caller. For now, return empty.
         print("Warning: combine_errors received an empty error_dict. Returning empty array.")
         return np.array([], dtype=np.float32).reshape(0, 0)
 
@@ -113,17 +81,9 @@ def combine_errors(
         composite_error = np.sum([weights[key] * error_img for key, error_img in error_dict.items()], axis=0)
         return np.clip(composite_error, 0, 1)
 
-    elif strategy in ['logical_and', 'logical_or']:
-        # These strategies are for binary maps, not grayscale error maps.
-        # The apply_threshold function should be used *before* calling combine_errors
-        # with these strategies if you want to combine binary maps.
-        # If combine_errors is called with these strategies and grayscale inputs,
-        # it indicates a potential logic error in the caller.
-        print(f"Error: Strategy '{strategy}' is for binary maps, but received grayscale inputs. Returning zero map.")
-        return np.zeros(img_shape, dtype=np.float32) # Return zero map on error
-
+    # Removed 'logical_and' and 'logical_or' strategies
     else:
-        raise ValueError(f"Invalid combination strategy: {strategy}.")
+        raise ValueError(f"Invalid combination strategy: {strategy}. Expected 'max' or 'weighted_sum'.")
 
 
 def simple_threshold(image: np.ndarray, threshold: float) -> np.ndarray:
@@ -175,9 +135,6 @@ def otsu_threshold(image: np.ndarray) -> np.ndarray:
         # Return an empty binary array with uint8 dtype
         return np.array([], dtype=np.uint8).reshape(image.shape)
 
-    # Add debugging prints for Otsu input
-    # print(f"DEBUG: Otsu input image shape: {image.shape}, dtype: {image.dtype}, min: {np.min(image):.6f}, max: {np.max(image):.6f}")
-
     # Scale image to uint8 [0, 255] for Otsu if it's float in [0, 1]
     img_scaled = image
     if np.max(image) <= 1.0 + 1e-8 and np.min(image) >= 0.0 - 1e-8:
@@ -195,17 +152,12 @@ def otsu_threshold(image: np.ndarray) -> np.ndarray:
          img_scaled = ((image - min_val) / (max_val - min_val + 1e-8) * 255).astype(np.uint8)
 
 
-    # Add debugging prints for scaled Otsu input
-    # print(f"DEBUG: Otsu scaled image shape: {img_scaled.shape}, dtype: {img_scaled.dtype}, min: {np.min(img_scaled):.6f}, max: {np.max(img_scaled):.6f}")
-
-
     if np.all(img_scaled == img_scaled.flat[0]): # Check if all elements are the same
          print("Warning: Input image is constant for Otsu. Returning zero map.")
          return np.zeros_like(img_scaled, dtype=np.uint8)
 
     try:
         thresh = threshold_otsu(img_scaled)
-        # print(f"DEBUG: Otsu threshold calculated: {thresh:.6f}")
         return (img_scaled > thresh).astype(np.uint8)
     except ValueError as e:
          print(f"Error during Otsu thresholding: {e}. Returning zero map.")
@@ -384,12 +336,6 @@ def calculate_edge_quality_measure(
     if quantile is not None and not (0.0 <= quantile <= 1.0):
          raise ValueError(f"Quantile must be between 0.0 and 1.0, got {quantile}.")
 
-    # Add debugging print for measure calculation
-    # print(f"DEBUG: Calculating edge quality measure '{measure_type}'...")
-    # print(f"DEBUG: image_for_quality shape: {image_for_quality.shape}, dtype: {image_for_quality.dtype}")
-    # print(f"DEBUG: image_source_for_band shape: {image_source_for_band.shape}, dtype: {image_source_for_band.dtype}")
-
-
     try:
         # Generate a binary map from the source image to define the band
         binary_edge_map_for_band = apply_threshold(
@@ -409,7 +355,6 @@ def calculate_edge_quality_measure(
 
 
     if np.sum(binary_edge_map_for_band) == 0:
-        # print("DEBUG: No edges detected in the image source for band. Returning 0.0.")
         return 0.0
 
     # Ensure get_band_around_edges is available
@@ -420,7 +365,6 @@ def calculate_edge_quality_measure(
     band_mask = get_band_around_edges(binary_edge_map_for_band, band_width)
 
     if np.sum(band_mask) == 0:
-        # print("DEBUG: Generated band is empty. Returning 0.0.")
         return 0.0
 
     measure_values_in_band = None
@@ -440,10 +384,8 @@ def calculate_edge_quality_measure(
              raise ImportError(f"scikit-image is required for '{measure_type}' (for band creation).")
         measure_values_in_band = image_for_quality[band_mask > 0]
         if measure_values_in_band.size < 2:
-             # print("DEBUG: Not enough values in band for variance calculation. Returning 0.0.")
              return 0.0
         variance_value = np.var(measure_values_in_band)
-        # print(f"DEBUG: Calculated variance in band: {variance_value:.6f}")
         return float(variance_value) # Return variance directly
 
     elif measure_type == 'mean_abs_error_near_edges':
@@ -456,21 +398,14 @@ def calculate_edge_quality_measure(
         raise ValueError(f"Invalid edge quality measure type: {measure_type}.")
 
     if measure_values_in_band is None or measure_values_in_band.size == 0:
-         # print(f"DEBUG: No measure values found within the band for measure type '{measure_type}' after masking. Returning 0.0.")
          return 0.0
-
-    # Add debugging print for measure values in band before quantile/mean
-    # print(f"DEBUG: Measure values in band size: {measure_values_in_band.size}, min: {np.min(measure_values_in_band):.6f}, max: {np.max(measure_values_in_band):.6f}")
-
 
     if quantile is not None:
         # Calculate the specified quantile
         quality_measure = np.quantile(measure_values_in_band, quantile)
-        # print(f"DEBUG: Calculated {quantile*100:.0f}th percentile of measure values in band: {quality_measure:.6f}")
     elif measure_type != 'variance_near_edges': # Variance is handled above
         # Calculate the mean if no quantile is specified (default behavior)
         quality_measure = np.mean(measure_values_in_band)
-        # print(f"DEBUG: Calculated mean of measure values in band: {quality_measure:.6f}")
     else:
         # This case should not be reached if variance is handled above, but as a safeguard
         print(f"DEBUG: Warning: Unhandled case for measure type '{measure_type}' and quantile status. Returning 0.0.")
@@ -478,10 +413,6 @@ def calculate_edge_quality_measure(
 
 
     return float(quality_measure)
-
-# Add placeholder for new edge-driven quality measures
-# These functions will take a binary edge map (and potentially the original/error image)
-# for a segment and return a measure of edge quality within that segment.
 
 def calculate_edge_density(binary_edge_map: np.ndarray) -> float:
     """
@@ -500,16 +431,3 @@ def calculate_edge_density(binary_edge_map: np.ndarray) -> float:
     if binary_edge_map.size == 0:
         return 0.0
     return np.sum(binary_edge_map) / binary_edge_map.size
-
-# Add more new edge-driven measures here as we define them...
-# def calculate_edge_strength_near_edges(binary_edge_map, image_for_strength):
-#     # ... implementation ...
-#     pass
-
-# def calculate_edge_continuity(binary_edge_map):
-#     # ... implementation ...
-#     pass
-
-# def calculate_edge_orientation_coherence(binary_edge_map, gradient_orientation_map):
-#     # ... implementation ...
-#     pass

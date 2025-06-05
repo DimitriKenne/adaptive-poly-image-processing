@@ -1,3 +1,4 @@
+# Python bytecode and build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,10 +18,20 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Virtual environment
 .venv/
 venv/
 ENV/
 .env/
+
+# IDE and OS specific files
 .vscode/
 *.swp
 .DS_Store
+
+# Generated results and exports (additions based on your project structure)
+# All generated plots, data, etc.
+results/
+# Folder for Overleaf-ready exports
+overleaf_exports/
