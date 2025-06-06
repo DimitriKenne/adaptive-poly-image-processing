@@ -1,6 +1,6 @@
 # **Adaptive Polynomial Image Reconstruction and Edge Detection**
 
-This project implements an advanced image processing pipeline focused on adaptive polynomial approximation for efficient image reconstruction and subsequent edge detection leveraging the approximation errors. The methodology explores representing image information using polynomial coefficients over dynamically segmented regions, offering potential for data compression and resolution enhancement.
+This project implements an image processing pipeline focused on adaptive polynomial approximation for efficient image reconstruction and subsequent edge detection leveraging the approximation errors. The methodology explores representing image information using polynomial coefficients over dynamically segmented regions, offering potential for data compression and resolution enhancement.
 
 ## **Table of Contents**
 
