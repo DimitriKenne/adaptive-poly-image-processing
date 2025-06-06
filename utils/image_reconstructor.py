@@ -7,7 +7,13 @@ import pickle
 from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional, Callable
 import numpy as np
-import matplotlib.pyplot as plt # Import matplotlib
+
+# IMPORTANT: Set matplotlib backend BEFORE importing matplotlib.pyplot
+# This prevents 'RuntimeError: main thread is not in main loop' when using multiprocessing
+import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt 
+
 import matplotlib.patches as patches
 import matplotlib.cm as cm
 from PIL import Image # Still needed for loading/saving images

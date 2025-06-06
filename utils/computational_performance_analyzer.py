@@ -8,193 +8,148 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Union, Optional
 import multiprocessing
 import json # For saving structured data
-from PIL import Image # For loading real image
 
 # Determine the project root dynamically
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import necessary functions from poly_approx package
+# Import necessary modules for full reconstruction
 try:
-    # We need image_poly_approximation_segment for benchmarking
-    from poly_approx.image_poly_approximation import image_poly_approximation_segment
+    import config.config_reconstructor as config_reconstructor # Import general config for parameters
+    from utils.image_reconstructor import AdaptivePolynomialReconstructor # Import the reconstructor
     
-    # Correct import: use the unified extremal_points function
-    from poly_approx.interpolation_nodes import extremal_points
-    
-    # Import config_reconstructor for default poly degree, basis, etc.
-    import config.config_reconstructor as config_reconstructor 
-
     _poly_approx_available = True
 except ImportError as e:
-    print(f"Could not import modules from poly_approx or config: {e}")
-    print("Please ensure your project structure is correct and all required modules are present.")
+    print(f"Could not import necessary modules for performance analysis: {e}")
+    print("Please ensure your project structure is correct and all config and core files are in place.")
     print("Computational performance analysis will be skipped.")
     _poly_approx_available = False
-
-    # Define dummy functions for robustness if imports fail
-    def image_poly_approximation_segment(*args, **kwargs):
-        print("Dummy image_poly_approximation_segment called for performance analysis.")
-        time.sleep(0.01) # Simulate 10ms
-        dummy_poly_degree = kwargs.get('poly_degree', 5)
-        num_coeffs = int((dummy_poly_degree + 1) * (dummy_poly_degree + 2) / 2)
-        dummy_coeffs = np.zeros(num_coeffs)
-        # Dummy error map, ensure it has some variance for std dev calculation
-        dummy_error_map = np.random.rand(100, 100) * 0.1 # Small random errors
-        return {
-            'computation_time': 0.01,
-            'coefficients_original': dummy_coeffs,
-            'error_original': dummy_error_map # Return an error map for metric calculation
-        }
-    
-    # Dummy extremal_points function
-    def extremal_points(*args, **kwargs): return np.zeros((1, 2))
 
 
 class ComputationalPerformanceAnalyzer:
     """
-    Analyzes the computational performance of different polynomial approximation methods
-    by measuring the time taken for a fixed-size segment from a real image.
+    Analyzes the computational performance and approximation quality of different
+    polynomial approximation methods by running full adaptive image reconstructions
+    for a set of benchmark images.
     """
 
-    def __init__(self, config_obj, image_name: str = "spiral_and_zigzag"):
-        self.config = config_obj
-        self.image_name = image_name
-        self.image_path = self.config.IMAGE_DIR / f"{self.image_name}.png"
-        
-        # Define a fixed size segment for benchmarking from the real image
-        # We will load the full image and take a crop to ensure consistency
-        self.segment_size = (100, 100) # Example: 100x100 pixels
-        self.dummy_image_segment = self._load_and_crop_image_segment(self.image_path, self.segment_size)
-        
-        # A rectangle representing the scaled domain for the dummy segment
-        self.dummy_rectangle = (0.0, 0.0, 1.0, 1.0) # Assume it maps to [0,1]x[0,1] for simplicity
-
-        # Results directory for performance data
-        self.performance_results_dir = self.config.BASE_RESULTS_DIR / "computational_performance_results"
-        os.makedirs(self.performance_results_dir, exist_ok=True)
-
-    def _load_and_crop_image_segment(self, image_path: Path, crop_size: Tuple[int, int]) -> np.ndarray:
-        """Loads a grayscale image, normalizes it, and crops a segment for analysis."""
-        if not image_path.exists():
-            print(f"Error: Image not found at {image_path}. Cannot perform analysis. Using dummy random segment.")
-            return np.random.rand(*crop_size).astype(np.float32) # Fallback to random
-        
-        try:
-            img = np.array(Image.open(image_path).convert('L'), dtype=np.float32) / 255.0
-            
-            # Take a crop from the center or top-left, ensuring it's within bounds
-            height, width = img.shape
-            crop_h, crop_w = crop_size
-            
-            if height < crop_h or width < crop_w:
-                print(f"Warning: Image {image_path.name} is too small ({height}x{width}) for desired crop ({crop_h}x{crop_w}). Using full image scaled or padding.")
-                # Simple scaling down if image is smaller than target crop
-                # Or for simplicity, if smaller, just return what's available (might not be exactly crop_size)
-                # For consistency, it's better to ensure a fixed size.
-                # Let's take top-left corner or scale if needed
-                if height < crop_h: crop_h = height
-                if width < crop_w: crop_w = width
-                return img[:crop_h, :crop_w]
-            
-            # Take a crop from the top-left corner (0,0) for simplicity
-            cropped_segment = img[0:crop_h, 0:crop_w]
-            print(f"Loaded and cropped {crop_h}x{crop_w} segment from {image_path.name} for performance analysis.")
-            return cropped_segment
-
-        except Exception as e:
-            print(f"Error loading or cropping image {image_path}: {e}. Using dummy random segment.")
-            return np.random.rand(*crop_size).astype(np.float32) # Fallback to random
-
-
-    def measure_method_performance(self, method: str, num_runs: int = 100) -> Dict[str, Union[float, int]]:
+    def __init__(self, config_obj, benchmark_image_names: List[str]):
         """
-        Measures the average computational time, number of nodes, max absolute error,
-        and standard deviation of error for a given method.
+        Initializes the analyzer.
 
         Args:
-            method: The node selection method to test.
-            num_runs: Number of times to run the approximation for averaging.
+            config_obj: The config_reconstructor module.
+            benchmark_image_names: A list of names of the images to use for benchmarking
+                                   the full reconstruction process.
+        """
+        self.config_template = config_obj # Store the original config_reconstructor
+        self.benchmark_image_names = benchmark_image_names
+        
+        # Results directory for performance data
+        self.performance_results_dir = self.config_template.BASE_RESULTS_DIR / "computational_performance_results"
+        os.makedirs(self.performance_results_dir, exist_ok=True)
+
+
+    def measure_method_performance_for_image(self, method: str, image_name: str) -> Dict[str, Union[float, int]]:
+        """
+        Measures the average computational time and approximation quality metrics
+        across all terminal segments during a full adaptive image reconstruction
+        for a *single image* using the specified node selection method.
+
+        Args:
+            method: The node selection method to test (e.g., 'full_mesh', 'leja').
+            image_name: The name of the image to benchmark.
 
         Returns:
-            A dictionary containing 'average_time_ms', 'num_nodes', 'max_absolute_error',
-            and 'std_dev_error'.
+            A dictionary containing 'total_reconstruction_time_s', 'avg_segment_time_ms',
+            'num_nodes', 'avg_max_absolute_error', and 'avg_std_dev_error'.
         """
         if not _poly_approx_available:
-            print(f"Skipping performance measurement for '{method}' due to missing modules.")
-            return {'average_time_ms': -1.0, 'num_nodes': -1, 'max_absolute_error': -1.0, 'std_dev_error': -1.0}
+            print(f"Skipping performance measurement for '{method}' on '{image_name}' due to missing modules.")
+            return {
+                'total_reconstruction_time_s': -1.0,
+                'avg_segment_time_ms': -1.0,
+                'num_nodes': -1, 
+                'avg_max_absolute_error': -1.0,
+                'avg_std_dev_error': -1.0,
+                'num_terminal_segments': -1
+            }
 
-        total_time = 0.0
-        total_max_abs_error = 0.0
-        total_std_dev_error = 0.0
-        num_nodes = 0 
+        print(f"\n--- Running full reconstruction for method: '{method}' on image: '{image_name}' ---")
 
-        print(f"Benchmarking '{method}' for {num_runs} runs...")
-
-        # Determine the number of nodes using the extremal_points function once
-        try:
-            nodes = extremal_points(
-                deg=self.config.POLY_DEGREE,
-                method=method,
-                rectangle=self.dummy_rectangle,
-                admissible_mesh_type=self.config.ADMISSIBLE_MESH_TYPE,
-                m_cheb=self.config.M_CHEB,
-                poly_basis=self.config.POLY_BASIS_USED
-            )
-            num_nodes = len(nodes)
-        except Exception as e:
-            print(f"Error determining num_nodes for '{method}' using extremal_points: {e}. Using default count.")
-            num_nodes = int((self.config.POLY_DEGREE + 1) * (self.config.POLY_DEGREE + 2) / 2)
-
-
-        for i in range(num_runs):
-            try:
-                start_time = time.perf_counter()
-                results = image_poly_approximation_segment(
-                    image_segment=self.dummy_image_segment,
-                    rectangle=self.dummy_rectangle,
-                    poly_degree=self.config.POLY_DEGREE,
-                    nodes_method=method, 
-                    admissible_mesh_type=self.config.ADMISSIBLE_MESH_TYPE,
-                    m_cheb=self.config.M_CHEB,
-                    poly_basis=self.config.POLY_BASIS_USED
-                )
-                end_time = time.perf_counter()
-                total_time += (end_time - start_time) * 1000 # Convert to milliseconds
-                
-                # Calculate error metrics
-                if 'error_original' in results and results['error_original'] is not None and results['error_original'].size > 0:
-                    total_max_abs_error += np.max(np.abs(results['error_original']))
-                    total_std_dev_error += np.std(results['error_original'])
-                else:
-                    print(f"Warning: No 'error_original' in results for '{method}' run {i}. Using 0 for error metrics.")
-
-            except Exception as e:
-                print(f"Error during benchmark for method '{method}' run {i}: {e}. Skipping this run.")
-                # Return current averages for completed runs, or -1 if no runs completed
-                if i == 0: # If first run failed
-                    return {'average_time_ms': -1.0, 'num_nodes': num_nodes, 'max_absolute_error': -1.0, 'std_dev_error': -1.0}
-                break # Break loop if an error occurs
-
-        runs_completed = num_runs if (num_runs - i) == 0 else i # Number of actual successful runs
+        # Temporarily modify the config_reconstructor for this run
+        current_image_path = self.config_template.IMAGE_DIR / f"{image_name}.png"
         
-        avg_time_ms = total_time / runs_completed
-        avg_max_abs_error = total_max_abs_error / runs_completed
-        avg_std_dev_error = total_std_dev_error / runs_completed
+        # Store original values to restore them later (important as config is shared)
+        original_nodes_method = self.config_template.NODES_METHOD
+        original_image_name_cfg = self.config_template.IMAGE_NAME
+        original_image_filename_cfg = self.config_template.IMAGE_FILENAME
+        original_image_path_cfg = self.config_template.IMAGE_PATH
 
-        print(f"'{method}' - Avg Time: {avg_time_ms:.4f} ms, Num Nodes: {num_nodes}, Max Abs Error: {avg_max_abs_error:.6f}, Std Dev Error: {avg_std_dev_error:.6f}")
+        self.config_template.NODES_METHOD = method
+        self.config_template.IMAGE_NAME = image_name
+        self.config_template.IMAGE_FILENAME = f"{image_name}.png"
+        self.config_template.IMAGE_PATH = current_image_path
+
+        # Instantiate the reconstructor with the (temporarily) updated config
+        reconstructor = AdaptivePolynomialReconstructor(self.config_template)
+
+        start_reconstruction_time = time.time()
+        # Run the full reconstruction
+        # The run_reconstruction populates reconstructor.final_segment_data
+        params_suffix, _, _ = reconstructor.run_reconstruction()
+        total_reconstruction_time_s = time.time() - start_reconstruction_time
+
+        # Restore original config values
+        self.config_template.NODES_METHOD = original_nodes_method
+        self.config_template.IMAGE_NAME = original_image_name_cfg
+        self.config_template.IMAGE_FILENAME = original_image_filename_cfg
+        self.config_template.IMAGE_PATH = original_image_path_cfg
+
+
+        # --- Aggregate Metrics from all terminal segments ---
+        segment_times = []
+        segment_max_abs_errors = []
+        segment_std_dev_errors = []
+        num_terminal_segments = 0
+
+        for segment_id, data in reconstructor.final_segment_data.items():
+            if data.get('status') in ['terminated_by_error', 'terminated_by_depth', 'terminated_by_size']:
+                segment_times.append(data.get('computation_time', 0.0))
+                segment_max_abs_errors.append(data.get('max_absolute_error', 0.0))
+                segment_std_dev_errors.append(data.get('std_dev_error', 0.0))
+                num_terminal_segments += 1
+        
+        avg_segment_time_ms = (np.mean(segment_times) * 1000) if segment_times else 0.0
+        avg_max_absolute_error = np.mean(segment_max_abs_errors) if segment_max_abs_errors else 0.0
+        avg_std_dev_error = np.mean(segment_std_dev_errors) if segment_std_dev_errors else 0.0
+
+        # Node count is specific to the method and polynomial degree, not averaged over segments.
+        # It's always (deg+1)*(deg+2)/2 for Leja/Fekete/Padua and (m*deg+1)^2 for Full Mesh.
+        poly_degree = self.config_template.POLY_DEGREE
+        if method == 'full_mesh':
+            num_points_per_dim = self.config_template.M_CHEB * poly_degree + 1
+            num_nodes = num_points_per_dim * num_points_per_dim
+        else: # Leja, Fekete, Padua
+            num_nodes = int((poly_degree + 1) * (poly_degree + 2) / 2)
+
+        print(f"  Result for '{image_name}' with '{method}': Total Time: {total_reconstruction_time_s:.4f}s, Avg Seg Time: {avg_segment_time_ms:.4f}ms, Num Nodes: {num_nodes}, Avg Max Abs Error: {avg_max_absolute_error:.6f}, Avg Std Dev Error: {avg_std_dev_error:.6f}, Segments: {num_terminal_segments}")
+
         return {
-            'average_time_ms': avg_time_ms,
-            'num_nodes': num_nodes,
-            'max_absolute_error': avg_max_abs_error,
-            'std_dev_error': avg_std_dev_error
+            'total_reconstruction_time_s': total_reconstruction_time_s,
+            'avg_segment_time_ms': avg_segment_time_ms,
+            'num_nodes': num_nodes, # This represents the *per-segment* node count for approximation
+            'avg_max_absolute_error': avg_max_absolute_error,
+            'avg_std_dev_error': avg_std_dev_error,
+            'num_terminal_segments': num_terminal_segments
         }
 
     def run_analysis(self):
         """
-        Runs the performance analysis for all specified node selection methods.
+        Runs the performance analysis for all specified node selection methods
+        by performing full image reconstructions across all benchmark images.
         """
-        print(f"\nStarting computational performance analysis using segment from {self.image_name}...")
+        print(f"\nStarting comprehensive computational performance analysis for full image reconstruction across {len(self.benchmark_image_names)} images...")
         
         methods_to_test = [
             'full_mesh', 
@@ -203,32 +158,87 @@ class ComputationalPerformanceAnalyzer:
             'padua'      
         ]
 
-        performance_results = {}
-        for method in methods_to_test:
-            results = self.measure_method_performance(method)
-            performance_results[method] = results
+        # Structure to store results: {method: {image_name: {metrics}}}
+        all_results: Dict[str, Dict[str, Dict[str, Union[float, int]]]] = {method: {} for method in methods_to_test}
 
-        # Save results to a JSON file
-        results_filename = f"poly_approx_performance_deg{self.config.POLY_DEGREE}_{self.image_name}_segment.json"
-        results_filepath = self.performance_results_dir / results_filename
+        for image_name in self.benchmark_image_names:
+            for method in methods_to_test:
+                image_method_results = self.measure_method_performance_for_image(method, image_name)
+                all_results[method][image_name] = image_method_results
+
+        # Aggregate results for overall summary (e.g., average across images)
+        aggregated_results: Dict[str, Dict[str, Union[float, int]]] = {}
+        for method in methods_to_test:
+            method_results_across_images = [
+                res for res in all_results[method].values()
+                if res['total_reconstruction_time_s'] != -1.0 # Exclude failed runs
+            ]
+            
+            if method_results_across_images:
+                avg_total_time = np.mean([res['total_reconstruction_time_s'] for res in method_results_across_images])
+                avg_avg_segment_time = np.mean([res['avg_segment_time_ms'] for res in method_results_across_images])
+                # Num nodes is constant per method and degree, so just take from the first successful run
+                num_nodes = method_results_across_images[0]['num_nodes'] 
+                avg_avg_max_abs_error = np.mean([res['avg_max_absolute_error'] for res in method_results_across_images])
+                avg_avg_std_dev_error = np.mean([res['avg_std_dev_error'] for res in method_results_across_images])
+                avg_num_terminal_segments = np.mean([res['num_terminal_segments'] for res in method_results_across_images])
+            else:
+                avg_total_time = -1.0
+                avg_avg_segment_time = -1.0
+                num_nodes = -1
+                avg_avg_max_abs_error = -1.0
+                avg_avg_std_dev_error = -1.0
+                avg_num_terminal_segments = -1
+
+            aggregated_results[method] = {
+                'avg_total_reconstruction_time_s': avg_total_time,
+                'avg_avg_segment_time_ms': avg_avg_segment_time,
+                'num_nodes': num_nodes, # This is the per-segment node count
+                'avg_avg_max_absolute_error': avg_avg_max_abs_error,
+                'avg_avg_std_dev_error': avg_avg_std_dev_error,
+                'avg_num_terminal_segments': avg_num_terminal_segments
+            }
+
+        # Save all detailed results (per image, per method) to a JSON file
+        detailed_results_filename = f"poly_approx_full_reco_performance_deg{self.config_template.POLY_DEGREE}_detailed.json"
+        detailed_results_filepath = self.performance_results_dir / detailed_results_filename
         try:
-            with open(results_filepath, 'w') as f:
-                json.dump(performance_results, f, indent=4)
-            print(f"\nSaved performance results to {results_filepath}")
+            with open(detailed_results_filepath, 'w') as f:
+                json.dump(all_results, f, indent=4)
+            print(f"\nSaved detailed full reconstruction performance results to {detailed_results_filepath}")
         except Exception as e:
-            print(f"Error saving performance results to JSON: {e}")
+            print(f"Error saving detailed performance results to JSON: {e}")
+
+        # Save aggregated results (averaged across images) to a separate JSON file
+        aggregated_results_filename = f"poly_approx_full_reco_performance_deg{self.config_template.POLY_DEGREE}_aggregated.json"
+        aggregated_results_filepath = self.performance_results_dir / aggregated_results_filename
+        try:
+            with open(aggregated_results_filepath, 'w') as f:
+                json.dump(aggregated_results, f, indent=4)
+            print(f"Saved aggregated full reconstruction performance results to {aggregated_results_filepath}")
+        except Exception as e:
+            print(f"Error saving aggregated performance results to JSON: {e}")
+
 
         print("\nComputational performance analysis finished.")
-        print("\nSummary of Results:")
-        print(f"{'Method':<25} | {'Avg Time (ms)':<15} | {'Num Nodes':<10} | {'Max Abs Error':<15} | {'Std Dev Error':<15}")
-        print("-" * 85) # Adjusted separator length
-        for method, data in performance_results.items():
-            print(f"{method:<25} | {data['average_time_ms']:<15.4f} | {data['num_nodes']:<10} | {data['max_absolute_error']:<15.6f} | {data['std_dev_error']:<15.6f}")
+        print("\nSummary of Full Reconstruction Results (Averaged Across Benchmarked Images):")
+        print(f"{'Method':<20} | {'Avg Total Time (s)':<19} | {'Avg Seg Time (ms)':<19} | {'Num Nodes':<10} | {'Avg Max Abs Error':<19} | {'Avg Std Dev Error':<19} | {'Avg Segments':<12}")
+        print("-" * 140) # Adjusted separator length
+        for method, data in aggregated_results.items():
+            print(f"{method:<20} | {data['avg_total_reconstruction_time_s']:<19.4f} | {data['avg_avg_segment_time_ms']:<19.4f} | {data['num_nodes']:<10} | {data['avg_avg_max_absolute_error']:<19.6f} | {data['avg_avg_std_dev_error']:<19.6f} | {data['avg_num_terminal_segments']:<12.1f}")
 
 if __name__ == "__main__":
     if not _poly_approx_available:
         print("Required modules not available. Exiting performance analyzer.")
         sys.exit(1)
 
-    analyzer = ComputationalPerformanceAnalyzer(config_reconstructor, image_name="spiral_and_zigzag") 
+    # Define the list of images to use for benchmarking
+    # Ensure these images exist in your config_reconstructor.IMAGE_DIR
+    benchmark_images = [
+        "Shepp_Logan_phantom",
+        "spiral",
+        "spiral_and_zigzag"
+    ]
+
+    analyzer = ComputationalPerformanceAnalyzer(config_reconstructor, benchmark_image_names=benchmark_images) 
     analyzer.run_analysis()

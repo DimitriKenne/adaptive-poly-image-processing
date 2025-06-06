@@ -241,7 +241,7 @@ class EdgeDetector:
     def plot_edge_strategy_comparison(self, params_suffix: str, threshold: float):
         """
         Generates and saves a comparison plot of binary edge maps
-        using different error map combination strategies.
+        using different error map combination strategies in a 3x2 grid.
         """
         if not self.config.SAVE_EDGE_STRATEGY_COMPARISON_PLOT or not self.config.EDGE_STRATEGIES_TO_COMPARE:
             return
@@ -253,11 +253,14 @@ class EdgeDetector:
         print("\nGenerating Edge Strategy Comparison Plot...")
         num_strategies = len(self.config.EDGE_STRATEGIES_TO_COMPARE)
         
-        rows = 2
-        cols = 3 
+        # Set to 3 rows and 2 columns for the subplot grid
+        rows = 3
+        cols = 2
         
-        fig_comp, axes_comp = plt.subplots(rows, cols, figsize=(self.config.PLOT_FIGURE_WIDTH_INCHES * cols * 0.7, self.config.PLOT_FIGURE_HEIGHT_INCHES * rows * 0.7))
-        axes_comp = axes_comp.flatten()
+        # Adjust figsize for the new layout (e.g., slightly wider to accommodate 2 columns)
+        # Multiply by a factor slightly greater than 1 to ensure enough space for titles/labels
+        fig_comp, axes_comp = plt.subplots(rows, cols, figsize=(self.config.PLOT_FIGURE_WIDTH_INCHES * cols * 0.8, self.config.PLOT_FIGURE_HEIGHT_INCHES * rows * 0.8))
+        axes_comp = axes_comp.flatten() # Flatten for easy iteration
 
         compared_edge_maps = {}
 
@@ -267,7 +270,7 @@ class EdgeDetector:
             if err_map is not None and err_map.size > 0
         }
 
-        # Define a mapping for desired display names
+        # Define a mapping for desired display names and also add the (a), (b) labels
         display_name_map = {
             'error_original': '$E_O$',
             'error_smoothed': '$E_S$',
@@ -276,8 +279,13 @@ class EdgeDetector:
             'max': 'Max Strategy',
             'weighted_sum': 'Weighted Sum Strategy',
         }
+        
+        # Create a list of alphabetical labels (a), (b), ...
+        alphabetical_labels = [f"({chr(97 + i)})" for i in range(num_strategies)]
+
 
         for i, strategy_name in enumerate(self.config.EDGE_STRATEGIES_TO_COMPARE):
+            ax = axes_comp[i] # Get the current subplot axis
             temp_composite_error_map = None
             
             if strategy_name in normalized_reassembled_errors_for_comparison:
@@ -302,22 +310,21 @@ class EdgeDetector:
                 compared_edge_maps[strategy_name] = temp_binary_edge_map
             else:
                 # If map generation failed, use a blank image for plotting
-                # Need the shape from original image for this, assume it's loaded
                 if self.original_image_shape:
                     compared_edge_maps[strategy_name] = np.zeros(self.original_image_shape, dtype=np.uint8)
                 else:
                     compared_edge_maps[strategy_name] = np.zeros((100,100), dtype=np.uint8) # Fallback
 
-
-        for i, strategy_name in enumerate(self.config.EDGE_STRATEGIES_TO_COMPARE):
-            ax = axes_comp[i]
+            # Plot the edge map
             edge_map = compared_edge_maps.get(strategy_name, np.zeros_like(self.original_image, dtype=np.uint8))
             ax.imshow(edge_map, cmap='gray')
             
+            # Set title with alphabetical label
             title_text = display_name_map.get(strategy_name, strategy_name.replace("_", " ").title())
-            ax.set_title(title_text)
-            ax.axis('off')
-        
+            ax.set_title(f"{alphabetical_labels[i]} {title_text}") # Add (a), (b) etc. to title
+            ax.axis('off') # Hide axes
+
+        # Remove any unused subplots (if num_strategies is less than rows*cols)
         for j in range(num_strategies, len(axes_comp)):
             fig_comp.delaxes(axes_comp[j])
 
@@ -449,23 +456,9 @@ class EdgeDetector:
                 print(f"Error saving composite error map plot: {e}")
             plt.close(fig_composite_err)
 
-        # Removed the direct PIL save, now only the Matplotlib plot remains for the final binary edge map.
-        # if self.config.SAVE_BINARY_EDGE_MAPS and self.final_adaptive_binary_edge_map is not None and self.final_adaptive_binary_edge_map.size > 0:
-        #     print("\nSaving final adaptive binary edge map...")
-        #     binary_edge_filename = f"{self.image_name}_final_adaptive_binary_edge_map_{edge_params_suffix}.{self.config.MATPLOTLIB_PARAMS['savefig.format']}"
-        #     binary_edge_filepath = self.image_results_dir / binary_edge_filename
-        #     try:
-        #         binary_edge_map_uint8 = (self.final_adaptive_binary_edge_map * 255).astype(np.uint8)
-        #         Image.fromarray(binary_edge_map_uint8).save(binary_edge_filepath)
-        #         print(f"Saved final adaptive binary edge map to {binary_edge_filepath}")
-        #     except Exception as e:
-        #         print(f"Error saving final adaptive binary edge map: {e}")
-
         # Individual plots for LaTeX subfigures
-        # These plots are essential for the paper's edge detection figures.
         self.plot_chosen_error_map(edge_params_suffix, current_fixed_threshold)
-        # Ensure this is the only call that saves the final binary edge map
-        if self.config.SAVE_BINARY_EDGE_MAPS: # Only call if user wants to save this
+        if self.config.SAVE_BINARY_EDGE_MAPS:
             self.plot_final_binary_edge_map(edge_params_suffix, current_fixed_threshold)
         
         if self.config.SAVE_EDGE_STRATEGY_COMPARISON_PLOT:
@@ -505,9 +498,9 @@ if __name__ == "__main__":
 
     # Determine fixed threshold based on dummy_image_name
     dummy_fixed_threshold_map = {
-        "Shepp_Logan_phantom": 0.04,
-        "spiral": 0.08,
-        "spiral_and_zigzag": 0.15,
+        "Shepp_Logan_phantom": 0.08,
+        "spiral": 0.05,
+        "spiral_and_zigzag": 0.1,
     }
     dummy_fixed_threshold = dummy_fixed_threshold_map.get(dummy_image_name, config_detector.FIXED_EDGE_THRESHOLD)
 
