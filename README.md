@@ -1,6 +1,6 @@
-# **Adaptive Polynomial Image Reconstruction and Edge Detection**
+# **Adaptive Polynomial Image Approximation and Edge Detection**
 
-This project implements an image processing pipeline focused on adaptive polynomial approximation for efficient image reconstruction and subsequent edge detection leveraging the approximation errors. The methodology explores representing image information using polynomial coefficients over dynamically segmented regions, offering potential for data compression and resolution enhancement.
+This project implements an image processing pipeline focused on adaptive polynomial approximation for efficient image approximation and subsequent edge detection leveraging the approximation errors. The methodology explores representing image information using polynomial coefficients over dynamically segmented regions, offering potential for data compression and resolution enhancement.
 
 ## **Table of Contents**
 
@@ -21,32 +21,32 @@ This project implements an image processing pipeline focused on adaptive polynom
 
 ## **1\. Project Overview**
 
-This repository provides a robust framework for performing adaptive image reconstruction using bivariate polynomial approximations. The image is recursively subdivided into segments based on a defined error criterion. For each terminal segment, polynomial coefficients are computed, effectively compressing the image information. These coefficients can then be used to reconstruct the image, potentially at higher resolutions. Furthermore, the error maps generated during this reconstruction process are utilized for various edge detection strategies.
+This repository provides a robust framework for performing adaptive image approximation using bivariate polynomial. The image is recursively subdivided into segments based on a defined error criterion. For each terminal segment, polynomial coefficients are computed, effectively compressing the image information. These coefficients can then be used to reconstruct the image, potentially at higher resolutions. Furthermore, the error maps generated during this approximation process are utilized for various edge detection strategies.
 
 ## **2\. Features**
 
-* **Adaptive Image Reconstruction:** Dynamic segmentation of images based on local approximation errors, using a quadtree-like subdivision strategy.  
+* **Adaptive Image Approximation:** Dynamic segmentation of images based on local approximation errors, using a quadtree-like subdivision strategy.  
 * **Polynomial Approximation:** Utilizes various interpolation node methods (full-mesh, Leja, Fekete, Padua) and polynomial bases (Monomial, Chebyshev) for approximating image segments.  
 * **Parallel Processing:** Leverages Python's multiprocessing module to accelerate segment approximation across multiple CPU cores.  
 * **Resolution Enhancement:** Reconstructs images at higher resolutions from their compact polynomial coefficient representation, without requiring additional high-resolution source data.  
 * **Error-Based Edge Detection:** Detects image edges by analyzing the error maps resulting from the polynomial approximation, offering various combination strategies (e.g., maximum error, weighted sum of errors) and thresholding methods.  
 * **Comprehensive Visualization:** Generates a suite of high-quality plots for detailed analysis, including:  
   * Original and Reconstructed Images  
-  * Actual Reconstruction Error Heatmaps  
-  * Reconstruction with Segmentation Boundaries  
+  * Actual approximation Error Heatmaps  
+  * approximation with Subdivision Boundaries  
   * Segment Error Heatmaps  
   * Statistical plots: Error Distribution, Depth vs. Segment Count, Segment Size Distribution.  
   * Comparison Plots for different Edge Detection Strategies and their raw error maps.  
-* **Computational Performance Analysis:** Includes a dedicated script to measure and compare the execution time and approximation quality of different polynomial approximation node generation methods during full image reconstruction.  
+* **Computational Performance Analysis:** Includes a dedicated script to measure and compare the execution time and approximation quality of different polynomial approximation node generation methods during full image approximation.  
 * **Overleaf Export Utility:** A utility script to automatically create copies of generated result plots with shortened, Overleaf-compatible filenames.
 
 ## **3\. Project Structure**
 ```
 .  
-├── config/                     \# Configuration files for reconstruction and edge detection parameters  
+├── config/                     \# Configuration files for approximation and edge detection parameters  
 │   ├── \_\_init\_\_.py             \# Makes config a Python package  
 │   ├── config\_detector.py      \# Edge detection specific configurations  
-│   └── config\_reconstructor.py \# Image reconstruction specific configurations  
+│   └── config\_reconstructor.py \# Image approximation specific configurations  
 ├── docs/                       \# (Placeholder for additional documentation, if any)  
 ├── images/                     \# Input images (e.g., Shepp\_Logan\_phantom.png, spiral.png)  
 ├── overleaf\_exports/           \# \*\*(Generated \- untracked by Git)\*\* Exported plots/data with shortened filenames for Overleaf upload  
@@ -55,7 +55,7 @@ This repository provides a robust framework for performing adaptive image recons
 │   ├── admissible\_meshes.py    \# Functions for generating admissible meshes (e.g., Chebyshev)  
 │   ├── edge\_processing.py      \# Functions for combining error maps and applying thresholds  
 │   ├── image\_poly\_approximation.py \# Main logic for polynomial approximation of image segments  
-│   ├── image\_reconstruction\_metrics.py \# Functions for calculating error metrics and normalizing images  
+│   ├── image\_approximation\_metrics.py \# Functions for calculating error metrics and normalizing images  
 │   ├── interpolation\_nodes.py  \# Functions for generating different types of interpolation nodes  
 │   ├── poly\_projector.py       \# Functions for evaluating polynomials from coefficients  
 │   └── polynomial\_bases.py     \# Definitions for different polynomial bases and multi-indices  
@@ -63,7 +63,7 @@ This repository provides a robust framework for performing adaptive image recons
 │   ├── admissible\_mesh\_tests/      \# Test results for admissible mesh generation  
 │   ├── computational\_performance\_results/ \# Performance analysis outputs (.json files with detailed and aggregated results)  
 │   ├── edge\_detection\_results/     \# Edge detection specific plots  
-│   ├── image\_reconstruction\_results/ \# Image reconstruction plots and segment data (.pkl)  
+│   ├── image\_approximation\_results/ \# Image approximation plots and segment data (.pkl)  
 │   ├── interpolation\_node\_tests/   \# Test results for interpolation node generation  
 │   └── poly\_projector\_tests/       \# Test results for polynomial projection  
 ├── scripts/                    \# Helper scripts and utility tools  
@@ -76,13 +76,13 @@ This repository provides a robust framework for performing adaptive image recons
 │   ├── \_\_init\_\_.py             \# Makes utils a Python package  
 │   ├── computational\_performance\_analyzer.py \# Analyzes performance of approximation methods  
 │   ├── edge\_detector.py        \# Implements the edge detection pipeline  
-│   └── image\_reconstructor.py  \# Implements the adaptive image reconstruction pipeline  
+│   └── image\_reconstructor.py  \# Implements the adaptive image approximation pipeline  
 ├── venv/                       \# \*\*(Generated \- untracked by Git)\*\* Python virtual environment  
 ├── .gitignore                  \# Specifies intentionally untracked files and directories  
 ├── LICENSE                     \# Project license (e.g., MIT, Apache 2.0) \- \*\*Please fill in details\*\*  
 ├── README.md                   \# Project overview and instructions  
 ├── requirements.txt            \# Lists Python package dependencies  
-└── run\_experiments.py          \# Main orchestrator script to run reconstruction and edge detection
+└── run\_experiments.py          \# Main orchestrator script to run approximation and edge detection
 ```
 
 ## **4\. Prerequisites**
@@ -134,21 +134,21 @@ To set up and run this project, follow these steps:
 
 ### **6.1. Running Experiments**
 
-The central script for orchestrating image reconstruction and edge detection experiments is run\_experiments.py. It automates the process for a set of predefined images, checking for existing reconstruction data to avoid redundant computations.
+The central script for orchestrating image approximation and edge detection experiments is run\_experiments.py. It automates the process for a set of predefined images, checking for existing approximation data to avoid redundant computations.
 
 To execute the full experimental pipeline:
 ```bash
 python run\_experiments.py
 ```
 
-This script will process each image, perform adaptive reconstruction (if its data (.pkl file) is not already generated), and then apply various edge detection strategies, saving all generated plots and data files to the results/ directory.
+This script will process each image, perform adaptive approximation (if its data (.pkl file) is not already generated), and then apply various edge detection strategies, saving all generated plots and data files to the results/ directory.
 
 ### **6.2. Configuration**
 
-All configurable parameters for the image reconstruction and edge detection processes are located in the `config/` directory. You can adjust these files to customize the behavior of the algorithms:
+All configurable parameters for the image approximation and edge detection processes are located in the `config/` directory. You can adjust these files to customize the behavior of the algorithms:
 
 * **`config/config\_reconstructor.py`**:  
-  * Controls parameters for the adaptive segmentation and polynomial approximation, such as polynomial degree (`POLY\_DEGREE`), node generation method (`NODES\_METHOD`), error criteria (`ERROR\_THRESHOLD`, `ERROR\_MEASURE\_TYPE`), recursion limits (`MAX\_DEPTH`, `MIN\_SEGMENT\_SIZE`), and parallel processing (`NUM\_PROCESSES`). Also defines flags for saving reconstruction-specific plots and data.  
+  * Controls parameters for the adaptive segmentation and polynomial approximation, such as polynomial degree (`POLY\_DEGREE`), node generation method (`NODES\_METHOD`), error criteria (`ERROR\_THRESHOLD`, `ERROR\_MEASURE\_TYPE`), recursion limits (`MAX\_DEPTH`, `MIN\_SEGMENT\_SIZE`), and parallel processing (`NUM\_PROCESSES`). Also defines flags for saving approximation-specific plots and data.  
 * **`config/config\_detector.py`**:  
   * Manages parameters for edge detection, including the strategy for combining error maps (`ERROR\_COMBINATION\_STRATEGY`, `ERROR\_COMBINATION\_WEIGHTS`), thresholding type (`EDGE\_THRESHOLD\_TYPE`, `FIXED\_EDGE\_THRESHOLD`), and which strategies to compare in plots (`EDGE\_STRATEGIES\_TO\_COMPARE`).
 
@@ -174,13 +174,13 @@ This script will create a new top-level directory named `overleaf\_exports/` in 
 
 ### **6.4. Computational Performance Analysis**
 
-To run a comprehensive analysis of the computational performance and approximation quality of different polynomial approximation node generation methods during the *full adaptive image reconstruction process*:
+To run a comprehensive analysis of the computational performance and approximation quality of different polynomial approximation node generation methods during the *full adaptive image approximation process*:
 
 ```bash
 python utils/computational\_performance\_analyzer.py
 ```
 
-This script performs reconstructions for a predefined set of benchmark images (e.g., Shepp\_Logan\_phantom, spiral, spiral\_and\_zigzag). It will output a summary table directly to the console with metrics averaged across these images. Additionally, it saves two JSON files in results/computational\_performance\_results/:
+This script performs approximations for a predefined set of benchmark images (e.g., Shepp\_Logan\_phantom, spiral, spiral\_and\_zigzag). It will output a summary table directly to the console with metrics averaged across these images. Additionally, it saves two JSON files in results/computational\_performance\_results/:
 
 * `poly\_approx\_full\_reco\_performance\_degX\_detailed.json`: Contains the full, per-image, per-method results.  
 * `poly\_approx\_full\_reco\_performance\_degX\_aggregated.json`: Contains the averaged results, suitable for tables in your paper.
@@ -199,8 +199,8 @@ Consider adding a screenshot of some example output plots here to give a quick v
   * Verify your project structure matches the one described above, especially for imports from `config/`, `utils/`, and `poly\_approx/`.  
 * **"Error loading image: FileNotFoundError"**:  
   * Make sure the images specified in `config\_reconstructor.py` and `run\_experiments.py` actually exist in the `images/` directory.  
-* **"Reconstruction data NOT found..." when it should be there**:  
-  * Check if the `results/image\_reconstruction\_results/` directory exists and contains the .pkl files. Filenames are sensitive to reconstruction parameters; if you changed `config\_reconstructor.py` since the last run, the old .pkl might not match the new expected filename.
+* **"approximation data NOT found..." when it should be there**:  
+  * Check if the `results/image\_approximation\_results/` directory exists and contains the .pkl files. Filenames are sensitive to approximation parameters; if you changed `config\_reconstructor.py` since the last run, the old .pkl might not match the new expected filename.
 
 ## **9\. License**
 
