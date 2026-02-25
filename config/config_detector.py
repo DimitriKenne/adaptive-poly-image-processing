@@ -30,9 +30,9 @@ ERROR_COMBINATION_STRATEGY: str = 'weighted_sum'
 # Only used if ERROR_COMBINATION_STRATEGY is 'weighted_sum'
 ERROR_COMBINATION_WEIGHTS: Dict[str, float] = {
     'error_original': 0.05,
-    'error_smoothed': 0.15,
-    'diff_original_poly_smoothed': 0.7,
-    'diff_smoothed_poly_original': 0.1,
+    'error_smoothed': 0.8,
+    'diff_original_poly_smoothed': 0.1,
+    'diff_smoothed_poly_original': 0.05,
 }
 # Note: Weights will be normalized to sum to 1.0 if they don't.
 
@@ -95,7 +95,7 @@ MATPLOTLIB_PARAMS: Dict[str, Union[str, int, float, bool, List[str]]] = {
     # Figure and subplot settings
     "figure.autolayout": True, # Automatically adjust subplot params for tight layout
     "savefig.dpi": 600, # DPI for raster images (PNG) - high quality for print
-    "savefig.format": "pdf", # Default format for saving figures (vector graphics recommended)
+    "savefig.format": "eps", # Use eps or pdf as default format for saving figures (vector graphics recommended)
     "figure.figsize": (8, 6), # Default figure size (width, height) in inches for single plots
 
     # Grid settings

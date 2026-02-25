@@ -235,9 +235,9 @@ if __name__ == "__main__":
     # Define the list of images to use for benchmarking
     # Ensure these images exist in your config_reconstructor.IMAGE_DIR
     benchmark_images = [
-        "Shepp_Logan_phantom",
-        "spiral",
-        "spiral_and_zigzag"
+         "Shepp_Logan_phantom",
+        # "spiral",
+        # "spiral_and_zigzag"
     ]
 
     analyzer = ComputationalPerformanceAnalyzer(config_reconstructor, benchmark_image_names=benchmark_images) 

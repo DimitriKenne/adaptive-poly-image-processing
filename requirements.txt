@@ -4,3 +4,5 @@ Pillow
 matplotlib
 scikit-image
 opencv-python
+pdf2image
+Gudhi

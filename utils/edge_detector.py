@@ -217,6 +217,19 @@ class EdgeDetector:
             print(f"Error saving Chosen Error Map for Edge Detection plot: {e}")
         plt.close(fig_chosen_err)
 
+    def save_binary_map(self, binary_map: np.ndarray, file_path: Path):
+        """
+        Saves a pure binary NumPy array as a black and white PNG image.
+        """
+        # Ensure the array contains only 0s and 1s
+        if not np.all(np.logical_or(binary_map == 0, binary_map == 1)):
+            raise ValueError("Input array for binary map must only contain 0 and 1.")
+
+        # Convert the 0s and 1s to 255s and 0s for a standard black and white image
+        image_data = binary_map * 255
+        img = Image.fromarray(image_data.astype(np.uint8), 'L')
+        img.save(file_path)
+        
     def plot_final_binary_edge_map(self, params_suffix: str, threshold: float):
         """Saves the final adaptive binary edge map plot for LaTeX subfigure."""
         if self.final_adaptive_binary_edge_map is None or self.final_adaptive_binary_edge_map.size == 0:
@@ -230,8 +243,14 @@ class EdgeDetector:
         
         # This is the preferred name
         plot_filename_final_edge = f"{self.image_name}_final_binary_edge_map_{params_suffix}.{self.config.MATPLOTLIB_PARAMS['savefig.format']}"
+        binary_image_filename = f"{self.image_name}_final_binary_edge_pure_map_{params_suffix}.png"
         plot_filepath_final_edge = os.path.join(str(self.image_results_dir), plot_filename_final_edge)
+        binary_image_filepath = self.image_results_dir / binary_image_filename
         try:
+            # First save the pure binary image as PNG
+            self.save_binary_map(self.final_adaptive_binary_edge_map, binary_image_filepath)
+            print(f"Saved Final Adaptive Binary Edge Map image to {binary_image_filepath}")
+            # Then save the Matplotlib plot
             plt.savefig(plot_filepath_final_edge, dpi=self.config.PLOT_DPI, format=self.config.MATPLOTLIB_PARAMS['savefig.format'])
             print(f"Saved Final Adaptive Binary Edge Map plot to {plot_filepath_final_edge}")
         except Exception as e:

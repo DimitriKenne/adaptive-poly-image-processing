@@ -48,68 +48,6 @@ except ImportError as e:
     print("Adaptive image reconstruction will be skipped.")
     _poly_approx_available = False
 
-    # Define dummy functions if imports fail (keep these for robustness in case of import issues)
-    def image_poly_approximation_segment(image_segment, rectangle, poly_degree, nodes_method, admissible_mesh_type, m_cheb, poly_basis):
-        print("Dummy image_poly_approximation_segment called.")
-        height, width = image_segment.shape
-        num_coeffs = int((poly_degree + 1) * (poly_degree + 2) / 2)
-        dummy_coeffs = np.zeros(num_coeffs)
-        dummy_error_map = np.zeros_like(image_segment)
-        return {
-            'original_segment': np.zeros_like(image_segment),
-            'smoothed_segment': np.zeros_like(image_segment),
-            'approx_original': np.zeros_like(image_segment),
-            'approx_smoothed': np.zeros_like(image_segment),
-            'error_original': dummy_error_map,
-            'error_smoothed': dummy_error_map,
-            'diff_original_poly_smoothed': dummy_error_map,
-            'diff_smoothed_poly_original': dummy_error_map,
-            'computation_time': 0.0,
-            'nodes_method': nodes_method,
-            'poly_degree': poly_degree,
-            'coefficients_original': dummy_coeffs,
-            'coefficients_smoothed': dummy_coeffs
-        }
-
-    def save_images(image_dict, save_folder):
-        print("Dummy save_images called.")
-        for filename in image_dict.keys():
-            print(f"  Dummy saving: {filename} to {save_folder}")
-
-    def calculate_error_measure(error_map, measure_type='mse'):
-        print(f"Dummy calculate_error_measure called with measure: {measure_type}")
-        return 1.0 # Return > threshold to force subdivision in dummy mode
-
-    def normalize_error_image_metrics(error_map, epsilon=1e-8): # Renamed dummy as well
-         print("Dummy normalize_error_image_metrics called.")
-         if error_map.size == 0:
-             return np.zeros_like(error_map, dtype=np.float32)
-         min_val = np.min(error_map)
-         max_val = np.max(error_map)
-         if max_val - min_val < epsilon:
-             return np.zeros_like(error_map, dtype=np.float32)
-         return ((error_map - min_val) / (max_val - min_val + epsilon)).astype(np.float32)
-
-    def dummy_basis_func_generator(point):
-         dummy_poly_degree = 5
-         num_coeffs = int((dummy_poly_degree + 1) * (dummy_poly_degree + 2) / 2)
-         return np.ones(num_coeffs)
-
-    def gen_vanderm2d(X, col=None, poly_basis=1, rectangle=None):
-         print("Dummy gen_vanderm2d called.")
-         num_points = len(X) if X is not None else 1
-         num_coeffs = col if col is not None else int((5 + 1) * (5 + 2) / 2)
-         dummy_V = np.zeros((num_points, num_coeffs))
-         return dummy_V, dummy_basis_func_generator
-
-    def evaluate_polynomial_from_coeffs(coeffs, basis_func_generator, eval_points):
-        print("Dummy evaluate_polynomial_from_coeffs called.")
-        eval_points = np.atleast_2d(eval_points)
-        return np.zeros(eval_points.shape[0])
-
-    def graded_lexicographic_multi_indices(total_terms):
-        print("Dummy graded_lexicographic_multi_indices called.")
-        return [(0,0)] * total_terms
 
 # --- Helper function for multiprocessing pool initialization ---
 def _worker_init():

@@ -63,6 +63,8 @@ def run_all_experiments():
         {"name": "Shepp_Logan_phantom", "fixed_threshold": 0.04},
         {"name": "spiral", "fixed_threshold": 0.05},
         {"name": "spiral_and_zigzag", "fixed_threshold": 0.15},
+        {"name": "spiral_zigzag", "fixed_threshold": 0.12},
+        {"name": "binary_image_spi_zig2", "fixed_threshold": 0.12},
     ]
 
     # Define edge detection strategies to test (besides the main one in config_detector)
